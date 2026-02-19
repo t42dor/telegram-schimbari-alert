@@ -129,7 +129,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def monitor(app):
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
 
         cursor.execute("SELECT chat_id, site, keyword, min_price, max_price, active FROM users")
         users = cursor.fetchall()
