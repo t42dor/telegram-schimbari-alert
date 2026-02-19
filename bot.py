@@ -1,4 +1,3 @@
-
 import os
 import sqlite3
 import asyncio
@@ -18,7 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
     site TEXT,
     keyword TEXT,
     min_price INTEGER,
-    max_price INTEGER
+    max_price INTEGER,
+    active INTEGER DEFAULT 1
 )
 """)
 
@@ -28,13 +28,17 @@ CREATE TABLE IF NOT EXISTS seen (
     link TEXT
 )
 """)
+
 db.commit()
 
+
+# ------------------ TELEGRAM UI ------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         ["Set Site", "Set Keyword"],
-        ["Set Price", "Show Config"]
+        ["Set Price", "Show Config"],
+        ["Start Alerts", "Stop Alerts"]
     ]
     await update.message.reply_text(
         "Bot activ. Alege o opțiune:",
@@ -47,7 +51,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
     cursor.execute(
-        "INSERT OR IGNORE INTO users (chat_id, min_price, max_price) VALUES (?, 0, 999999999)",
+        "INSERT OR IGNORE INTO users (chat_id, min_price, max_price, active) VALUES (?, 0, 999999999, 1)",
         (chat_id,)
     )
     db.commit()
@@ -64,24 +68,47 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Keyword salvat ✔")
 
     elif text.lower().startswith("price"):
-        _, minp, maxp = text.split()
-        cursor.execute(
-            "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
-            (int(minp), int(maxp), chat_id)
-        )
+        try:
+            _, minp, maxp = text.split()
+            cursor.execute(
+                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
+                (int(minp), int(maxp), chat_id)
+            )
+            db.commit()
+            await update.message.reply_text("Interval preț salvat ✔")
+        except:
+            await update.message.reply_text("Format corect: price 0 100000")
+
+    elif text == "Stop Alerts":
+        cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
         db.commit()
-        await update.message.reply_text("Interval preț salvat ✔")
+        await update.message.reply_text("🔴 Alertele au fost oprite.")
+
+    elif text == "Start Alerts":
+        cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("🟢 Alertele au fost activate.")
 
     elif text == "Show Config":
         cursor.execute(
-            "SELECT site, keyword, min_price, max_price FROM users WHERE chat_id=?",
+            "SELECT site, keyword, min_price, max_price, active FROM users WHERE chat_id=?",
             (chat_id,)
         )
         data = cursor.fetchone()
+
+        status = "🟢 Active" if data[4] == 1 else "🔴 Oprite"
+
         await update.message.reply_text(
-            f"Config:\nSite: {data[0]}\nKeyword: {data[1]}\nMin: {data[2]}\nMax: {data[3]}"
+            f"Config:\n"
+            f"Status: {status}\n"
+            f"Site: {data[0]}\n"
+            f"Keyword: {data[1]}\n"
+            f"Min: {data[2]}\n"
+            f"Max: {data[3]}"
         )
 
+
+# ------------------ MONITOR ------------------
 
 def parse_price(text):
     digits = "".join(c for c in text if c.isdigit())
@@ -92,10 +119,14 @@ async def monitor(app):
     while True:
         await asyncio.sleep(30)
 
-        cursor.execute("SELECT chat_id, site, keyword, min_price, max_price FROM users")
+        cursor.execute("SELECT chat_id, site, keyword, min_price, max_price, active FROM users")
         users = cursor.fetchall()
 
-        for chat_id, site, keyword, min_price, max_price in users:
+        for chat_id, site, keyword, min_price, max_price, active in users:
+
+            if active == 0:
+                continue
+
             if not site:
                 continue
 
@@ -135,15 +166,21 @@ async def monitor(app):
 
                         await app.bot.send_message(
                             chat_id=chat_id,
-                            text=f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{href}"
+                            text=f"🏠 OFERTĂ NOUĂ\n\n"
+                                 f"{title}\n\n"
+                                 f"💰 Preț: {price}\n"
+                                 f"🔗 {href}"
                         )
                         break
 
             except Exception as e:
-                print("Eroare:", e)
+                print("Eroare monitor:", e)
 
+
+# ------------------ APP START ------------------
 
 app = ApplicationBuilder().token(TOKEN).build()
+
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
