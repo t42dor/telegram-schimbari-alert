@@ -1,9 +1,11 @@
+
 import os
 import sqlite3
 import asyncio
+import requests
+from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from playwright.async_api import async_playwright
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
@@ -86,79 +88,69 @@ def parse_price(text):
     return int(digits) if digits else None
 
 
-async def monitor():
+async def monitor(app):
     while True:
         await asyncio.sleep(30)
 
         cursor.execute("SELECT chat_id, site, keyword, min_price, max_price FROM users")
         users = cursor.fetchall()
 
-        if not users:
-            continue
+        for chat_id, site, keyword, min_price, max_price in users:
+            if not site:
+                continue
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            try:
+                headers = {"User-Agent": "Mozilla/5.0"}
+                r = requests.get(site, headers=headers, timeout=10)
+                soup = BeautifulSoup(r.text, "lxml")
 
-            for chat_id, site, keyword, min_price, max_price in users:
-                if not site:
-                    continue
+                links = soup.find_all("a")
 
-                try:
-                    page = await browser.new_page()
-                    await page.goto(site, timeout=60000)
-                    await page.wait_for_timeout(5000)
+                for link in links:
+                    title = link.get_text(strip=True).lower()
+                    href = link.get("href")
 
-                    links = await page.query_selector_all("a")
+                    if not href or not href.startswith("http"):
+                        continue
 
-                    for link in links:
-                        title = (await link.inner_text()).lower()
-                        href = await link.get_attribute("href")
+                    if keyword and keyword.lower() not in title:
+                        continue
 
-                        if not href or not href.startswith("http"):
+                    parent_text = link.parent.get_text(" ", strip=True)
+                    price = parse_price(parent_text)
+
+                    if price and min_price <= price <= max_price:
+                        cursor.execute(
+                            "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
+                            (chat_id, href)
+                        )
+                        if cursor.fetchone():
                             continue
 
-                        if keyword and keyword.lower() not in title:
-                            continue
+                        cursor.execute(
+                            "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
+                            (chat_id, href)
+                        )
+                        db.commit()
 
-                        parent_text = await link.evaluate("el => el.parentElement.innerText")
-                        price = parse_price(parent_text)
+                        await app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{href}"
+                        )
+                        break
 
-                        if price and min_price <= price <= max_price:
-                            cursor.execute(
-                                "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
-                                (chat_id, href)
-                            )
-                            if cursor.fetchone():
-                                continue
-
-                            cursor.execute(
-                                "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
-                                (chat_id, href)
-                            )
-                            db.commit()
-
-                            await page.close()
-
-                            await app.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{href}"
-                            )
-                            break
-
-                    await page.close()
-
-                except Exception as e:
-                    print("Eroare:", e)
-
-            await browser.close()
+            except Exception as e:
+                print("Eroare:", e)
 
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
+
 async def on_startup(app):
-    asyncio.create_task(monitor())
+    asyncio.create_task(monitor(app))
+
 
 app.post_init = on_startup
 app.run_polling()
