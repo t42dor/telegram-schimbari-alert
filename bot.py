@@ -157,8 +157,8 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-async def main():
+async def on_startup(app):
     asyncio.create_task(monitor())
-    await app.run_polling()
 
-asyncio.run(main())
+app.post_init = on_startup
+app.run_polling()
