@@ -1,8 +1,8 @@
-name: OLX Monitor
+name: Telegram Monitor
 
 on:
   schedule:
-    - cron: "*/1 * * * *"
+    - cron: "*/2 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -10,19 +10,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
 
-      - name: Run script
+      - name: Run bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
