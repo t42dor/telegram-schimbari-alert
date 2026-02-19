@@ -1,49 +1,62 @@
 import os
-import sqlite3
-import asyncio
+import json
 import requests
-import unicodedata
-from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from playwright.sync_api import sync_playwright
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALERT_INTERVAL_SECONDS = int(os.getenv("ALERT_INTERVAL_SECONDS", "60"))
+TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
 
-db = sqlite3.connect("data.db", check_same_thread=False)
-cursor = db.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    chat_id INTEGER PRIMARY KEY,
-    site TEXT,
-    keyword TEXT,
-    min_price INTEGER,
-    max_price INTEGER,
-    active INTEGER DEFAULT 1
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS seen (
-    chat_id INTEGER,
-    link TEXT
-)
-""")
-
-db.commit()
+DATA_FILE = "seen.json"
 
 
-# ------------------ UTIL ------------------
+def send_telegram(text):
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text}
+    )
 
-def normalize_text(text):
-    if not text:
-        return ""
-    text = text.lower()
-    text = unicodedata.normalize('NFD', text)
-    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
-    return text
+
+def get_config_from_telegram():
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    data = requests.get(url).json()
+
+    if not data["result"]:
+        return None
+
+    last_message = data["result"][-1]["message"]["text"]
+    lines = last_message.split("\n")
+
+    config = {
+        "sites": [],
+        "keyword": "",
+        "min": 0,
+        "max": 999999999
+    }
+
+    for line in lines:
+        if line.startswith("SITE"):
+            config["sites"].append(line.split("=", 1)[1].strip())
+        elif line.startswith("KEYWORD="):
+            config["keyword"] = line.split("=", 1)[1].strip().lower()
+        elif line.startswith("MIN="):
+            config["min"] = int(line.split("=", 1)[1])
+        elif line.startswith("MAX="):
+            config["max"] = int(line.split("=", 1)[1])
+
+    return config
+
+
+def load_seen():
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def save_seen(seen):
+    with open(DATA_FILE, "w") as f:
+        json.dump(seen, f)
 
 
 def parse_price(text):
@@ -51,217 +64,52 @@ def parse_price(text):
     return int(digits) if digits else None
 
 
-# ------------------ TELEGRAM UI ------------------
+def check_site(url, keyword, min_price, max_price, seen, playwright):
+    browser = playwright.chromium.launch(headless=True)
+    page = browser.new_page()
+    page.goto(url, timeout=60000)
+    page.wait_for_timeout(5000)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        ["Set Site", "Set Keyword"],
-        ["Set Price", "Show Config"],
-        ["Start Alerts", "Stop Alerts"]
-    ]
-    await update.message.reply_text(
-        "Bot activ. Alege o opțiune:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    ads = page.query_selector_all("a")
+
+    for ad in ads:
+        title = ad.inner_text().lower()
+        link = ad.get_attribute("href")
+
+        if not link or "http" not in link:
+            continue
+
+        if keyword and keyword not in title:
+            continue
+
+        parent_text = ad.evaluate("el => el.parentElement.innerText")
+        price = parse_price(parent_text)
+
+        if price and min_price <= price <= max_price:
+            if link not in seen:
+                msg = f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{link}"
+                send_telegram(msg)
+                seen.append(link)
+
+    browser.close()
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    chat_id = update.message.chat_id
-
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (chat_id, min_price, max_price, active) VALUES (?, 0, 999999999, 1)",
-        (chat_id,)
-    )
-    db.commit()
-
-    pending_action = context.user_data.get("pending_action")
-    if pending_action == "set_site":
-        if not text.startswith("http"):
-            await update.message.reply_text("Trimite un URL complet (ex: https://www.imobiliare.ro/...)")
-            return
-        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
-        db.commit()
-        context.user_data.pop("pending_action", None)
-        await update.message.reply_text("Site salvat ✔")
-        return
-    if pending_action == "set_keyword":
-        keyword = text.strip()
-        if not keyword:
-            await update.message.reply_text("Trimite un keyword valid (ex: apartament brasov)")
-            return
-        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (keyword, chat_id))
-        db.commit()
-        context.user_data.pop("pending_action", None)
-        await update.message.reply_text("Keyword salvat ✔")
-        return
-    if pending_action == "set_price":
-        try:
-            minp, maxp = text.split()
-            cursor.execute(
-                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
-                (int(minp), int(maxp), chat_id)
-            )
-            db.commit()
-            context.user_data.pop("pending_action", None)
-            await update.message.reply_text("Interval preț salvat ✔")
-        except ValueError:
-            await update.message.reply_text("Format corect: 0 150000")
+def main():
+    config = get_config_from_telegram()
+    if not config:
         return
 
-    if text == "Set Site":
-        context.user_data["pending_action"] = "set_site"
-        await update.message.reply_text("Trimite URL-ul paginii pe care vrei monitorizare (ideal pagina de căutare, nu homepage).")
-        return
+    seen = load_seen()
 
-    if text == "Set Keyword":
-        context.user_data["pending_action"] = "set_keyword"
-        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
-        return
-
-    if text == "Set Price":
-        context.user_data["pending_action"] = "set_price"
-        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 0 150000).")
-        return
-
-    if text.startswith("http"):
-        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
-        db.commit()
-        await update.message.reply_text("Site salvat ✔")
-
-    elif text.lower().startswith("keyword"):
-        parts = text.split(" ", 1)
-        if len(parts) < 2 or not parts[1].strip():
-            await update.message.reply_text("Format corect: keyword apartament 2 camere")
-            return
-        keyword = parts[1].strip()
-        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (keyword, chat_id))
-        db.commit()
-        await update.message.reply_text("Keyword salvat ✔")
-
-    elif text.lower().startswith("price"):
-        try:
-            _, minp, maxp = text.split()
-            cursor.execute(
-                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
-                (int(minp), int(maxp), chat_id)
-            )
-            db.commit()
-            await update.message.reply_text("Interval preț salvat ✔")
-        except ValueError:
-            await update.message.reply_text("Format corect: price 0 100000")
-
-    elif text == "Stop Alerts":
-        cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
-        db.commit()
-        await update.message.reply_text("🔴 Alertele au fost oprite.")
-
-    elif text == "Start Alerts":
-        cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
-        db.commit()
-        await update.message.reply_text("🟢 Alertele au fost activate.")
-
-    elif text == "Show Config":
-        cursor.execute(
-            "SELECT site, keyword, min_price, max_price, active FROM users WHERE chat_id=?",
-            (chat_id,)
-        )
-        data = cursor.fetchone()
-
-        status = "🟢 Active" if data[4] == 1 else "🔴 Oprite"
-
-        await update.message.reply_text(
-            f"Config:\n"
-            f"Status: {status}\n"
-            f"Site: {data[0]}\n"
-            f"Keyword: {data[1]}\n"
-            f"Min: {data[2]}\n"
-            f"Max: {data[3]}"
-        )
-
-
-# ------------------ MONITOR ------------------
-
-async def monitor(app):
-    while True:
-        cursor.execute("SELECT chat_id, site, keyword, min_price, max_price, active FROM users")
-        users = cursor.fetchall()
-
-        for chat_id, site, keyword, min_price, max_price, active in users:
-
-            if active == 0 or not site:
-                continue
-
+    with sync_playwright() as p:
+        for site in config["sites"][:5]:
             try:
-                headers = {"User-Agent": "Mozilla/5.0"}
-                r = requests.get(site, headers=headers, timeout=10)
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, "lxml")
+                check_site(site, config["keyword"], config["min"], config["max"], seen, p)
+            except:
+                pass
 
-                links = soup.find_all("a")
-
-                for link in links:
-                    title_raw = link.get_text(strip=True)
-                    href = link.get("href")
-
-                    if not href:
-                        continue
-
-                    href = urljoin(site, href)
-                    scheme = urlparse(href).scheme
-                    if scheme not in {"http", "https"}:
-                        continue
-
-                    title = normalize_text(title_raw)
-
-                    if keyword:
-                        words = normalize_text(keyword).split()
-                        if not all(word in title for word in words):
-                            continue
-
-                    parent_text = normalize_text(link.parent.get_text(" ", strip=True))
-                    price = parse_price(parent_text)
-
-                    if price and min_price <= price <= max_price:
-                        cursor.execute(
-                            "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
-                            (chat_id, href)
-                        )
-                        if cursor.fetchone():
-                            continue
-
-                        cursor.execute(
-                            "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
-                            (chat_id, href)
-                        )
-                        db.commit()
-
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🏠 OFERTĂ NOUĂ\n\n"
-                                 f"{title_raw}\n\n"
-                                 f"💰 Preț: {price}\n"
-                                 f"🔗 {href}"
-                        )
-                        break
-
-            except Exception as e:
-                print("Eroare monitor:", e)
-
-        await asyncio.sleep(ALERT_INTERVAL_SECONDS)
+    save_seen(seen)
 
 
-# ------------------ START APP ------------------
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-
-
-async def on_startup(app):
-    asyncio.create_task(monitor(app))
-
-
-app.post_init = on_startup
-app.run_polling()
+if __name__ == "__main__":
+    main()
