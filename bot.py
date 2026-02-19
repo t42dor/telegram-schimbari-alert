@@ -2,6 +2,7 @@ import os
 import sqlite3
 import asyncio
 import requests
+import unicodedata
 from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -30,6 +31,22 @@ CREATE TABLE IF NOT EXISTS seen (
 """)
 
 db.commit()
+
+
+# ------------------ UTIL ------------------
+
+def normalize_text(text):
+    if not text:
+        return ""
+    text = text.lower()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    return text
+
+
+def parse_price(text):
+    digits = "".join(c for c in text if c.isdigit())
+    return int(digits) if digits else None
 
 
 # ------------------ TELEGRAM UI ------------------
@@ -110,11 +127,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------------ MONITOR ------------------
 
-def parse_price(text):
-    digits = "".join(c for c in text if c.isdigit())
-    return int(digits) if digits else None
-
-
 async def monitor(app):
     while True:
         await asyncio.sleep(30)
@@ -124,10 +136,7 @@ async def monitor(app):
 
         for chat_id, site, keyword, min_price, max_price, active in users:
 
-            if active == 0:
-                continue
-
-            if not site:
+            if active == 0 or not site:
                 continue
 
             try:
@@ -138,16 +147,20 @@ async def monitor(app):
                 links = soup.find_all("a")
 
                 for link in links:
-                    title = link.get_text(strip=True).lower()
+                    title_raw = link.get_text(strip=True)
                     href = link.get("href")
 
                     if not href or not href.startswith("http"):
                         continue
 
-                    if keyword and keyword.lower() not in title:
-                        continue
+                    title = normalize_text(title_raw)
 
-                    parent_text = link.parent.get_text(" ", strip=True)
+                    if keyword:
+                        words = normalize_text(keyword).split()
+                        if not all(word in title for word in words):
+                            continue
+
+                    parent_text = normalize_text(link.parent.get_text(" ", strip=True))
                     price = parse_price(parent_text)
 
                     if price and min_price <= price <= max_price:
@@ -167,7 +180,7 @@ async def monitor(app):
                         await app.bot.send_message(
                             chat_id=chat_id,
                             text=f"🏠 OFERTĂ NOUĂ\n\n"
-                                 f"{title}\n\n"
+                                 f"{title_raw}\n\n"
                                  f"💰 Preț: {price}\n"
                                  f"🔗 {href}"
                         )
@@ -177,7 +190,7 @@ async def monitor(app):
                 print("Eroare monitor:", e)
 
 
-# ------------------ APP START ------------------
+# ------------------ START APP ------------------
 
 app = ApplicationBuilder().token(TOKEN).build()
 
