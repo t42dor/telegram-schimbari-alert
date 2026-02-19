@@ -3,6 +3,7 @@ import sqlite3
 import asyncio
 import requests
 import unicodedata
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -73,6 +74,55 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (chat_id,)
     )
     db.commit()
+
+    pending_action = context.user_data.get("pending_action")
+    if pending_action == "set_site":
+        if not text.startswith("http"):
+            await update.message.reply_text("Trimite un URL complet (ex: https://www.imobiliare.ro/...)")
+            return
+        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
+        db.commit()
+        context.user_data.pop("pending_action", None)
+        await update.message.reply_text("Site salvat ✔")
+        return
+    if pending_action == "set_keyword":
+        keyword = text.strip()
+        if not keyword:
+            await update.message.reply_text("Trimite un keyword valid (ex: apartament brasov)")
+            return
+        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (keyword, chat_id))
+        db.commit()
+        context.user_data.pop("pending_action", None)
+        await update.message.reply_text("Keyword salvat ✔")
+        return
+    if pending_action == "set_price":
+        try:
+            minp, maxp = text.split()
+            cursor.execute(
+                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
+                (int(minp), int(maxp), chat_id)
+            )
+            db.commit()
+            context.user_data.pop("pending_action", None)
+            await update.message.reply_text("Interval preț salvat ✔")
+        except ValueError:
+            await update.message.reply_text("Format corect: 0 150000")
+        return
+
+    if text == "Set Site":
+        context.user_data["pending_action"] = "set_site"
+        await update.message.reply_text("Trimite URL-ul paginii pe care vrei monitorizare (ideal pagina de căutare, nu homepage).")
+        return
+
+    if text == "Set Keyword":
+        context.user_data["pending_action"] = "set_keyword"
+        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
+        return
+
+    if text == "Set Price":
+        context.user_data["pending_action"] = "set_price"
+        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 0 150000).")
+        return
 
     if text.startswith("http"):
         cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
@@ -154,41 +204,48 @@ async def monitor(app):
                     title_raw = link.get_text(strip=True)
                     href = link.get("href")
 
-                    if not href or not href.startswith("http"):
+                    if not href:
                         continue
 
-                    title = normalize_text(title_raw)
+                    href = urljoin(site, href)
+                    scheme = urlparse(href).scheme
+                    if scheme not in {"http", "https"}:
+                        continue
+
+                    parent_text_raw = link.parent.get_text(" ", strip=True)
+                    searchable_text = normalize_text(f"{title_raw} {parent_text_raw}")
 
                     if keyword:
                         words = normalize_text(keyword).split()
-                        if not all(word in title for word in words):
+                        if not all(word in searchable_text for word in words):
                             continue
 
-                    parent_text = normalize_text(link.parent.get_text(" ", strip=True))
-                    price = parse_price(parent_text)
+                    price = parse_price(normalize_text(parent_text_raw))
+                    if not price or not (min_price <= price <= max_price):
+                        continue
 
-                    if price and min_price <= price <= max_price:
-                        cursor.execute(
-                            "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
-                            (chat_id, href)
-                        )
-                        if cursor.fetchone():
-                            continue
+                    cursor.execute(
+                        "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
+                        (chat_id, href)
+                    )
+                    if cursor.fetchone():
+                        continue
 
-                        cursor.execute(
-                            "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
-                            (chat_id, href)
-                        )
-                        db.commit()
+                    cursor.execute(
+                        "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
+                        (chat_id, href)
+                    )
+                    db.commit()
 
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🏠 OFERTĂ NOUĂ\n\n"
-                                 f"{title_raw}\n\n"
-                                 f"💰 Preț: {price}\n"
-                                 f"🔗 {href}"
-                        )
-                        break
+                    message_title = title_raw if title_raw else "Anunț imobiliar"
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🏠 OFERTĂ NOUĂ\n\n"
+                             f"{message_title}\n\n"
+                             f"💰 Preț: {price}\n"
+                             f"🔗 {href}"
+                    )
+                    break
 
             except Exception as e:
                 print("Eroare monitor:", e)
