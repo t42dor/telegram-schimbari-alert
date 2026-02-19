@@ -1,21 +1,50 @@
 import os
-import requests
-from bs4 import BeautifulSoup
 import json
+import requests
+from playwright.sync_api import sync_playwright
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
-URL = "https://www.olx.ro/imobiliare/vanzare-apartamente/brasov/?search%5Bfilter_float_price%3Ato%5D=100000"
-KEYWORD = "apartament"
-MIN_PRICE = 0
-MAX_PRICE = 100000
-
 DATA_FILE = "seen.json"
 
+
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+    requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text}
+    )
+
+
+def get_config_from_telegram():
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+    data = requests.get(url).json()
+
+    if not data["result"]:
+        return None
+
+    last_message = data["result"][-1]["message"]["text"]
+    lines = last_message.split("\n")
+
+    config = {
+        "sites": [],
+        "keyword": "",
+        "min": 0,
+        "max": 999999999
+    }
+
+    for line in lines:
+        if line.startswith("SITE"):
+            config["sites"].append(line.split("=", 1)[1].strip())
+        elif line.startswith("KEYWORD="):
+            config["keyword"] = line.split("=", 1)[1].strip().lower()
+        elif line.startswith("MIN="):
+            config["min"] = int(line.split("=", 1)[1])
+        elif line.startswith("MAX="):
+            config["max"] = int(line.split("=", 1)[1])
+
+    return config
+
 
 def load_seen():
     try:
@@ -24,39 +53,63 @@ def load_seen():
     except:
         return []
 
+
 def save_seen(seen):
     with open(DATA_FILE, "w") as f:
         json.dump(seen, f)
 
+
 def parse_price(text):
-    digits = ''.join(c for c in text if c.isdigit())
+    digits = "".join(c for c in text if c.isdigit())
     return int(digits) if digits else None
 
-def check():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(URL, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
 
-    seen = load_seen()
+def check_site(url, keyword, min_price, max_price, seen, playwright):
+    browser = playwright.chromium.launch(headless=True)
+    page = browser.new_page()
+    page.goto(url, timeout=60000)
+    page.wait_for_timeout(5000)
 
-    for a in soup.find_all("a"):
-        link = a.get("href")
-        if not link or "olx.ro" not in link:
+    ads = page.query_selector_all("a")
+
+    for ad in ads:
+        title = ad.inner_text().lower()
+        link = ad.get_attribute("href")
+
+        if not link or "http" not in link:
             continue
 
-        title = a.get_text().lower()
-        if KEYWORD.lower() not in title:
+        if keyword and keyword not in title:
             continue
 
-        price = parse_price(a.parent.get_text())
-        if price and MIN_PRICE <= price <= MAX_PRICE:
+        parent_text = ad.evaluate("el => el.parentElement.innerText")
+        price = parse_price(parent_text)
+
+        if price and min_price <= price <= max_price:
             if link not in seen:
-                msg = f"OFERTĂ NOUĂ\n{title}\nPreț: {price} €\n{link}"
+                msg = f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{link}"
                 send_telegram(msg)
                 seen.append(link)
 
+    browser.close()
+
+
+def main():
+    config = get_config_from_telegram()
+    if not config:
+        return
+
+    seen = load_seen()
+
+    with sync_playwright() as p:
+        for site in config["sites"][:5]:
+            try:
+                check_site(site, config["keyword"], config["min"], config["max"], seen, p)
+            except:
+                pass
+
     save_seen(seen)
 
-if __name__ == "__main__":
-    check()
 
+if __name__ == "__main__":
+    main()
