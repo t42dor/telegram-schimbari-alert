@@ -109,6 +109,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
+# ---------------- SCHEDULER ----------------
+
+async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
+    print("Scheduler rulează corect")
+
 # ---------------- MAIN ----------------
 
 def main():
@@ -118,7 +123,10 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    print("=== BOT CU STATE FUNCTIONAL ===")
+    # Scheduler la fiecare 60 sec
+    app.job_queue.run_repeating(scheduled_check, interval=60, first=15)
+
+    print("=== BOT CU STATE + SCHEDULER ===")
 
     app.run_polling()
 
