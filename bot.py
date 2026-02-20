@@ -109,10 +109,29 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
+
 # ---------------- SCHEDULER ----------------
 
+from playwright.async_api import async_playwright
+
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    print("Scheduler rulează corect")
+    print("=== PORNESC PLAYWRIGHT ===")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            await page.goto("https://example.com", timeout=60000)
+
+            title = await page.title()
+            print("Titlu pagină:", title)
+
+            await browser.close()
+
+    except Exception as e:
+        print("EROARE PLAYWRIGHT:", e)
+
 
 # ---------------- MAIN ----------------
 
