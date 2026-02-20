@@ -179,7 +179,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Min: {data[2]}\n"
             f"Max: {data[3]}"
         )
+        data = cursor.fetchone()
 
+        status = "🟢 Active" if data and data[4] == 1 else "🔴 Oprite"
 
 # ------------------ MONITOR ------------------
 
