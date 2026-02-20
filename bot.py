@@ -2,6 +2,7 @@ import os
 import logging
 import json
 from pathlib import Path
+from typing import Dict, Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,123 +14,36 @@ from telegram.ext import (
     filters,
 )
 
-DATA_FILE = Path("users.json")
+from playwright.async_api import async_playwright
 
+# ---------------- CONFIG ----------------
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
+DATA_FILE = Path("users.json")
 
-# ---------------- MENU ----------------
+logging.basicConfig(level=logging.INFO)
 
-def main_menu():
-    keyboard = [
-        [InlineKeyboardButton("💰 Set Price", callback_data="price")],
-        [InlineKeyboardButton("🔎 Set Keyword", callback_data="keyword")],
-        [InlineKeyboardButton("🔔 Toggle Alert", callback_data="alert")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# ---------------- DATA LAYER ----------------
 
-# ---------------- START ----------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-
-    context.user_data["min"] = 0
-    context.user_data["max"] = 999999999
-    context.user_data["keyword"] = ""
-    context.user_data["alerts_enabled"] = True
-    context.user_data["state"] = None
-
-    await update.message.reply_text(
-        "Bot pornit. Alege:",
-        reply_markup=main_menu()
-    )
-
-# ---------------- BUTTON HANDLER ----------------
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    if data == "price":
-        context.user_data["state"] = "awaiting_price"
-        await query.edit_message_text("Introdu: min max (ex: 1000 5000)")
-
-    elif data == "keyword":
-        context.user_data["state"] = "awaiting_keyword"
-        await query.edit_message_text("Introdu cuvânt cheie:")
-
-    elif data == "alert":
-        current = context.user_data.get("alerts_enabled", True)
-        context.user_data["alerts_enabled"] = not current
-
-        status = "ACTIVĂ" if context.user_data["alerts_enabled"] else "OPRITĂ"
-
-        await query.edit_message_text(
-            f"Alerta este acum: {status}",
-            reply_markup=main_menu()
-        )
-
-# ---------------- TEXT HANDLER ----------------
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = context.user_data.get("state")
-
-    if state == "awaiting_price":
-        try:
-            parts = update.message.text.split()
-            min_price = int(parts[0])
-            max_price = int(parts[1])
-
-            context.user_data["min"] = min_price
-            context.user_data["max"] = max_price
-            context.user_data["state"] = None
-
-            await update.message.reply_text(
-                f"Preț setat: {min_price} - {max_price}",
-                reply_markup=main_menu()
-            )
-        except:
-            await update.message.reply_text(
-                "Format invalid. Exemplu: 1000 5000"
-            )
-
-    elif state == "awaiting_keyword":
-        keyword = update.message.text.strip().lower()
-
-        context.user_data["keyword"] = keyword
-        context.user_data["state"] = None
-
-        await update.message.reply_text(
-            f"Cuvânt cheie setat: {keyword}",
-            reply_markup=main_menu()
-        )
-
-    else:
-        await update.message.reply_text(
-            "Nu sunt în modul de setare. Folosește butoanele.",
-            reply_markup=main_menu()
-        )
-
-def load_users():
+def load_users() -> Dict[str, Any]:
     if not DATA_FILE.exists():
         return {}
-
     try:
         with DATA_FILE.open("r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
-def save_users(data):
+def save_users(data: Dict[str, Any]) -> None:
     with DATA_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def get_user(chat_id):
+def get_user(chat_id: int) -> Dict[str, Any]:
     users = load_users()
-    if str(chat_id) not in users:
-        users[str(chat_id)] = {
+    cid = str(chat_id)
+
+    if cid not in users:
+        users[cid] = {
             "keyword": "",
             "min": 0,
             "max": 999999999,
@@ -138,35 +52,136 @@ def get_user(chat_id):
             "seen": []
         }
         save_users(users)
-    return users[str(chat_id)]
 
-def update_user(chat_id, user_data):
+    return users[cid]
+
+def update_user(chat_id: int, data: Dict[str, Any]) -> None:
     users = load_users()
-    users[str(chat_id)] = user_data
+    users[str(chat_id)] = data
     save_users(users)
+
+# ---------------- MENU ----------------
+
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("Set Keyword", callback_data="set_keyword")],
+        [InlineKeyboardButton("Set Price Range", callback_data="set_price")],
+        [InlineKeyboardButton("Add Site", callback_data="add_site")],
+        [InlineKeyboardButton("View Settings", callback_data="view_settings")],
+        [InlineKeyboardButton("Toggle Alerts", callback_data="toggle_alerts")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ---------------- COMMANDS ----------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Bot activ.",
+        reply_markup=main_menu()
+    )
+
+# ---------------- CALLBACK HANDLER ----------------
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    user = get_user(chat_id)
+
+    if query.data == "set_keyword":
+        context.user_data["state"] = "waiting_keyword"
+        await query.message.reply_text("Trimite keyword:")
+
+    elif query.data == "set_price":
+        context.user_data["state"] = "waiting_price"
+        await query.message.reply_text("Trimite min și max separate prin spațiu (ex: 1000 5000):")
+
+    elif query.data == "add_site":
+        if len(user["sites"]) >= 5:
+            await query.message.reply_text("Ai deja 5 site-uri.")
+        else:
+            context.user_data["state"] = "waiting_site"
+            await query.message.reply_text("Trimite URL site:")
+
+    elif query.data == "view_settings":
+        msg = (
+            f"Keyword: {user['keyword']}\n"
+            f"Min: {user['min']}\n"
+            f"Max: {user['max']}\n"
+            f"Sites: {user['sites']}\n"
+            f"Alerts: {user['alerts_enabled']}"
+        )
+        await query.message.reply_text(msg)
+
+    elif query.data == "toggle_alerts":
+        user["alerts_enabled"] = not user["alerts_enabled"]
+        update_user(chat_id, user)
+        await query.message.reply_text(f"Alerts: {user['alerts_enabled']}")
+
+# ---------------- MESSAGE HANDLER ----------------
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    user = get_user(chat_id)
+    state = context.user_data.get("state")
+
+    if state == "waiting_keyword":
+        user["keyword"] = update.message.text.lower()
+        update_user(chat_id, user)
+        context.user_data["state"] = None
+        await update.message.reply_text("Keyword set.")
+
+    elif state == "waiting_price":
+        try:
+            parts = update.message.text.split()
+            user["min"] = int(parts[0])
+            user["max"] = int(parts[1])
+            update_user(chat_id, user)
+            await update.message.reply_text("Price range set.")
+        except:
+            await update.message.reply_text("Format invalid.")
+        context.user_data["state"] = None
+
+    elif state == "waiting_site":
+        user["sites"].append(update.message.text.strip())
+        update_user(chat_id, user)
+        context.user_data["state"] = None
+        await update.message.reply_text("Site added.")
+
+# ---------------- SCRAPER ----------------
+
+async def check_user_sites(chat_id: int, user: Dict[str, Any], app):
+    if not user["alerts_enabled"] or not user["sites"]:
+        return
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+
+        for site in user["sites"]:
+            try:
+                page = await browser.new_page()
+                await page.goto(site, timeout=60000)
+                content = await page.content()
+
+                if user["keyword"] and user["keyword"] in content.lower():
+                    await app.bot.send_message(chat_id, f"Keyword găsit pe {site}")
+
+                await page.close()
+            except Exception as e:
+                print("Eroare site:", e)
+
+        await browser.close()
 
 # ---------------- SCHEDULER ----------------
 
-from playwright.async_api import async_playwright
-
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
-    print("=== PORNESC PLAYWRIGHT ===")
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-
-            await page.goto("https://example.com", timeout=60000)
-
-            title = await page.title()
-            print("Titlu pagină:", title)
-
-            await browser.close()
-
-    except Exception as e:
-        print("EROARE PLAYWRIGHT:", e)
-
+    users = load_users()
+    for chat_id_str, user in users.items():
+        try:
+            await check_user_sites(int(chat_id_str), user, context.application)
+        except Exception as e:
+            print("Eroare user:", e)
 
 # ---------------- MAIN ----------------
 
@@ -175,13 +190,11 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    # Scheduler la fiecare 60 sec
-    app.job_queue.run_repeating(scheduled_check, interval=60, first=15)
+    app.job_queue.run_repeating(scheduled_check, interval=60, first=10)
 
-    print("=== BOT CU STATE + SCHEDULER ===")
-
+    print("=== BOT COMPLET PORNIT ===")
     app.run_polling()
 
 if __name__ == "__main__":
