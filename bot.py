@@ -224,7 +224,7 @@ async def monitor(app):
                     parent_text = normalize_text(link.parent.get_text(" ", strip=True))
                     price = parse_price(parent_text)
 
-                    if price and min_price <= price <= max_price:
+                    if price is not None and min_price <= price <= max_price:
                         cursor.execute(
                             "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
                             (chat_id, href),
