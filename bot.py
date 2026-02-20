@@ -11,6 +11,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALERT_INTERVAL_SECONDS = int(os.getenv("ALERT_INTERVAL_SECONDS", "60"))
 
+if not TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN is missing. Set it in environment variables.")
+
 db = sqlite3.connect("data.db", check_same_thread=False)
 cursor = db.cursor()
 
@@ -232,28 +235,31 @@ async def monitor(app):
                         parent_text = normalize_text(link.parent.get_text(" ", strip=True))
                         price = parse_price(parent_text)
 
-                        if price and min_price <= price <= max_price:
-                            cursor.execute(
-                                "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
-                                (chat_id, href)
-                            )
-                            if cursor.fetchone():
-                                continue
+                        if price is not None and not (min_price <= price <= max_price):
+                            continue
 
-                            cursor.execute(
-                                "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
-                                (chat_id, href)
-                            )
-                            db.commit()
+                        cursor.execute(
+                            "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
+                            (chat_id, href)
+                        )
+                        if cursor.fetchone():
+                            continue
 
-                            await app.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"🏠 OFERTĂ NOUĂ\n\n"
-                                     f"{title_raw}\n\n"
-                                     f"💰 Preț: {price}\n"
-                                     f"🔗 {href}"
-                            )
-                            break
+                        cursor.execute(
+                            "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
+                            (chat_id, href)
+                        )
+                        db.commit()
+
+                        price_text = str(price) if price is not None else "necunoscut"
+                        await app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🏠 OFERTĂ NOUĂ\n\n"
+                                 f"{title_raw}\n\n"
+                                 f"💰 Preț: {price_text}\n"
+                                 f"🔗 {href}"
+                        )
+                        break
 
                 except Exception as e:
                     print(f"Eroare monitor pentru {site_url}:", e)
