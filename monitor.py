@@ -1,70 +1,66 @@
-import os
 import json
+import os
+from pathlib import Path
+
 import requests
 from playwright.sync_api import sync_playwright
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
-DATA_FILE = "seen.json"
+CONFIG_FILE = Path("config.json")
+SEEN_FILE = Path("seen.json")
+
+DEFAULT_CONFIG = {
+    "sites": [],
+    "keyword": "",
+    "min": 0,
+    "max": 999_999_999,
+}
 
 
-def send_telegram(text):
+def send_telegram(text: str) -> None:
     requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": text}
+        json={"chat_id": CHAT_ID, "text": text},
+        timeout=20,
     )
 
 
-def get_config_from_telegram():
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    data = requests.get(url).json()
+def load_config() -> dict:
+    if not CONFIG_FILE.exists():
+        return DEFAULT_CONFIG.copy()
 
-    if not data["result"]:
-        return None
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_CONFIG.copy()
 
-    last_message = data["result"][-1]["message"]["text"]
-    lines = last_message.split("\n")
-
-    config = {
-        "sites": [],
-        "keyword": "",
-        "min": 0,
-        "max": 999999999
-    }
-
-    for line in lines:
-        if line.startswith("SITE"):
-            config["sites"].append(line.split("=", 1)[1].strip())
-        elif line.startswith("KEYWORD="):
-            config["keyword"] = line.split("=", 1)[1].strip().lower()
-        elif line.startswith("MIN="):
-            config["min"] = int(line.split("=", 1)[1])
-        elif line.startswith("MAX="):
-            config["max"] = int(line.split("=", 1)[1])
-
+    config = DEFAULT_CONFIG.copy()
+    config.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
     return config
 
 
-def load_seen():
+def load_seen() -> list[str]:
     try:
-        with open(DATA_FILE, "r") as f:
+        with SEEN_FILE.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except (json.JSONDecodeError, OSError):
         return []
 
 
-def save_seen(seen):
-    with open(DATA_FILE, "w") as f:
+def save_seen(seen: list[str]) -> None:
+    with SEEN_FILE.open("w", encoding="utf-8") as f:
         json.dump(seen, f)
 
 
-def parse_price(text):
+def parse_price(text: str) -> int | None:
     digits = "".join(c for c in text if c.isdigit())
     return int(digits) if digits else None
 
 
-def check_site(url, keyword, min_price, max_price, seen, playwright):
+def check_site(url: str, keyword: str, min_price: int, max_price: int, seen: list[str], playwright) -> None:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page()
     page.goto(url, timeout=60000)
@@ -73,7 +69,7 @@ def check_site(url, keyword, min_price, max_price, seen, playwright):
     ads = page.query_selector_all("a")
 
     for ad in ads:
-        title = ad.inner_text().lower()
+        title = (ad.inner_text() or "").strip().lower()
         link = ad.get_attribute("href")
 
         if not link or "http" not in link:
@@ -82,21 +78,20 @@ def check_site(url, keyword, min_price, max_price, seen, playwright):
         if keyword and keyword not in title:
             continue
 
-        parent_text = ad.evaluate("el => el.parentElement.innerText")
+        parent_text = ad.evaluate("el => el.parentElement ? el.parentElement.innerText : ''")
         price = parse_price(parent_text)
 
-        if price and min_price <= price <= max_price:
-            if link not in seen:
-                msg = f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{link}"
-                send_telegram(msg)
-                seen.append(link)
+        if price is not None and min_price <= price <= max_price and link not in seen:
+            msg = f"OFERTĂ NOUĂ\n{title}\nPreț: {price}\n{link}"
+            send_telegram(msg)
+            seen.append(link)
 
     browser.close()
 
 
-def main():
-    config = get_config_from_telegram()
-    if not config:
+def main() -> None:
+    config = load_config()
+    if not config["sites"]:
         return
 
     seen = load_seen()
@@ -104,9 +99,9 @@ def main():
     with sync_playwright() as p:
         for site in config["sites"][:5]:
             try:
-                check_site(site, config["keyword"], config["min"], config["max"], seen, p)
-            except:
-                pass
+                check_site(site, config["keyword"], int(config["min"]), int(config["max"]), seen, p)
+            except Exception:
+                continue
 
     save_seen(seen)
 
