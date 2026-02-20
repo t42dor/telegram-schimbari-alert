@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     "keyword": "",
     "min": 0,
     "max": 999_999_999,
+    "alerts_enabled": True,
 }
 
 
@@ -39,6 +40,7 @@ def load_config() -> dict:
 
     config = DEFAULT_CONFIG.copy()
     config.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
+    config["alerts_enabled"] = bool(config.get("alerts_enabled", True))
     return config
 
 
@@ -91,7 +93,7 @@ def check_site(url: str, keyword: str, min_price: int, max_price: int, seen: lis
 
 def main() -> None:
     config = load_config()
-    if not config["sites"]:
+    if not config["alerts_enabled"] or not config["sites"]:
         return
 
     seen = load_seen()
