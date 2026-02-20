@@ -46,6 +46,8 @@ RESET_INLINE_KEYBOARD = InlineKeyboardMarkup(
 )
 
 
+# ---------------- CONFIG HELPERS ----------------
+
 def load_config() -> dict[str, Any]:
     if not CONFIG_FILE.exists():
         return DEFAULT_CONFIG.copy()
@@ -54,7 +56,7 @@ def load_config() -> dict[str, Any]:
         with CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
-        logger.warning("Config file invalid. Falling back to default config.")
+        logger.warning("Config invalid. Using default.")
         return DEFAULT_CONFIG.copy()
 
     merged = DEFAULT_CONFIG.copy()
@@ -75,31 +77,6 @@ def clear_runtime_files() -> None:
         SEEN_FILE.unlink()
 
 
-def parse_config_message(text: str) -> dict[str, Any]:
-    config = DEFAULT_CONFIG.copy()
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        upper = line.upper()
-
-        if upper.startswith("SITE="):
-            config["sites"].append(line.split("=", 1)[1].strip())
-        elif upper.startswith("KEYWORD="):
-            config["keyword"] = line.split("=", 1)[1].strip().lower()
-        elif upper.startswith("MIN="):
-            config["min"] = int(line.split("=", 1)[1].strip())
-        elif upper.startswith("MAX="):
-            config["max"] = int(line.split("=", 1)[1].strip())
-
-    if config["min"] > config["max"]:
-        raise ValueError("MIN nu poate fi mai mare decât MAX.")
-
-    return config
-
-
 def config_message(config: dict[str, Any]) -> str:
     sites = "\n".join(f"- {site}" for site in config["sites"]) or "(niciun site setat)"
     status = "Pornite" if config.get("alerts_enabled", True) else "Oprite"
@@ -113,63 +90,47 @@ def config_message(config: dict[str, Any]) -> str:
     )
 
 
+# ---------------- HANDLERS ----------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info(f"START from chat_id: {update.effective_chat.id}")
+    if update.effective_chat:
+        logger.info(f"START from chat_id: {update.effective_chat.id}")
 
     context.user_data["awaiting"] = None
+
+    if update.message:
+        await update.message.reply_text(
+            "Salut! Configurează din butoanele de mai jos sau cu comenzile clasice."
+            "\nPoți folosi și /showconfig, /resetconfig.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
+        await update.message.reply_text(
+            "Ai și buton de resetare rapidă:",
+            reply_markup=RESET_INLINE_KEYBOARD,
+        )
+
+
+async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    config = load_config()
     await update.message.reply_text(
-        "Salut! Configurează din butoanele de mai jos sau cu comenzile clasice."
-        "\nPoți folosi și /showconfig, /resetconfig.",
-        reply_markup=MAIN_KEYBOARD,
-    )
-    await update.message.reply_text(
-        "Ai și buton de resetare rapidă:",
+        config_message(config),
         reply_markup=RESET_INLINE_KEYBOARD,
     )
 
 
-async def set_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info(f"SETCONFIG from chat_id: {update.effective_chat.id}")
-
-    text = update.message.text.partition(" ")[2].strip()
-    if not text:
-        await update.message.reply_text(
-            "Trimite configurația după comandă, cu linii separate prin ENTER.\n"
-            "Exemplu:\n"
-            "/setconfig SITE=https://site.ro\nKEYWORD=masina\nMIN=1000\nMAX=5000"
-        )
-        return
-
-    try:
-        parsed = parse_config_message(text)
-    except ValueError as exc:
-        await update.message.reply_text(f"Config invalid: {exc}")
-        return
-
-    current = load_config()
-    parsed["alerts_enabled"] = current.get("alerts_enabled", True)
-    save_config(parsed)
-    await update.message.reply_text("✅ Setările au fost salvate.", reply_markup=MAIN_KEYBOARD)
-
-
-async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info(f"SHOWCONFIG from chat_id: {update.effective_chat.id}")
-
-    config = load_config()
-    await update.message.reply_text(config_message(config), reply_markup=RESET_INLINE_KEYBOARD)
-
-
 async def reset_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info(f"RESET from chat_id: {update.effective_chat.id}")
-
     clear_runtime_files()
     context.user_data["awaiting"] = None
 
     if update.callback_query:
         await update.callback_query.answer("Setările au fost șterse.")
-        await update.callback_query.edit_message_text("✅ Setările actuale au fost șterse.")
+        await update.callback_query.edit_message_text("✅ Setările au fost șterse.")
     elif update.message:
-        await update.message.reply_text("✅ Setările actuale au fost șterse.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("✅ Setările au fost șterse.", reply_markup=MAIN_KEYBOARD)
 
 
 async def handle_reset_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -178,54 +139,34 @@ async def handle_reset_button(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_button_and_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info(f"MESSAGE from chat_id: {update.effective_chat.id}")
-
-    text = (update.message.text or "").strip()
-    lowered = text.lower()
-    awaiting = context.user_data.get("awaiting")
-
-    if lowered == "set site":
-        context.user_data["awaiting"] = "site"
-        await update.message.reply_text(
-            "Trimite URL-ul site-ului (ex: https://www.olx.ro).\n"
-            "Dacă vrei mai multe, trimite mai multe linii.",
-            reply_markup=MAIN_KEYBOARD,
-        )
+    if not update.message:
         return
 
-    if lowered == "set keyword":
-        context.user_data["awaiting"] = "keyword"
-        await update.message.reply_text("Trimite keyword-ul dorit.", reply_markup=MAIN_KEYBOARD)
-        return
+    if update.effective_chat:
+        logger.info(f"MESSAGE from chat_id: {update.effective_chat.id}")
 
-    if lowered == "set price":
-        context.user_data["awaiting"] = "price"
-        await update.message.reply_text(
-            "Trimite intervalul în format: MIN MAX (ex: 500 2500).",
-            reply_markup=MAIN_KEYBOARD,
-        )
-        return
+    text = (update.message.text or "").strip().lower()
 
-    if lowered == "show config":
+    config = load_config()
+
+    if text == "show config":
         await show_config(update, context)
         return
 
-    if lowered == "reset config":
+    if text == "reset config":
         await reset_config(update, context)
         return
 
-    if lowered == "start alerts":
-        config = load_config()
+    if text == "start alerts":
         config["alerts_enabled"] = True
         save_config(config)
-        await update.message.reply_text("✅ Alertele au fost pornite.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("✅ Alertele au fost pornite.")
         return
 
-    if lowered == "stop alerts":
-        config = load_config()
+    if text == "stop alerts":
         config["alerts_enabled"] = False
         save_config(config)
-        await update.message.reply_text("⏸️ Alertele au fost oprite.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("⏸️ Alertele au fost oprite.")
         return
 
     await update.message.reply_text(
@@ -234,6 +175,24 @@ async def handle_button_and_input(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
+# ---------------- MAIN ----------------
+
 def main() -> None:
     token = os.getenv("TELEGRAM_TOKEN")
-    if not to
+    if not token:
+        raise RuntimeError("Lipsește TELEGRAM_TOKEN.")
+
+    app = Application.builder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("showconfig", show_config))
+    app.add_handler(CommandHandler("resetconfig", reset_config))
+    app.add_handler(CallbackQueryHandler(handle_reset_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button_and_input))
+
+    logger.info("Botul pornește...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
