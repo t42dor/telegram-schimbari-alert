@@ -188,8 +188,13 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
+    # 1️⃣ CallbackQueryHandler PRIMUL
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # 2️⃣ CommandHandler
+    app.add_handler(CommandHandler("start", start))
+
+    # 3️⃣ MessageHandler ULTIMUL
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     app.job_queue.run_repeating(scheduled_check, interval=60, first=10)
@@ -197,5 +202,3 @@ def main():
     print("=== BOT COMPLET PORNIT ===")
     app.run_polling()
 
-if __name__ == "__main__":
-    main()
