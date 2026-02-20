@@ -51,6 +51,24 @@ def parse_price(text):
     return int(digits) if digits else None
 
 
+def parse_sites_input(text):
+    separators = [",", "\n", ";", " "]
+    normalized = text
+
+    for separator in separators:
+        normalized = normalized.replace(separator, "\n")
+
+    sites = []
+    for site in normalized.split("\n"):
+        clean_site = site.strip()
+        if not clean_site:
+            continue
+        if clean_site.startswith("http") and clean_site not in sites:
+            sites.append(clean_site)
+
+    return sites
+
+
 # ------------------ TELEGRAM UI ------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,13 +100,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_action = context.user_data.get("pending_action")
 
     if pending_action == "set_site":
-        if not text.startswith("http"):
-            await update.message.reply_text("Trimite un URL complet (ex: https://...)")
+        sites = parse_sites_input(text)
+        if not sites:
+            await update.message.reply_text(
+                "Trimite unul sau mai multe URL-uri complete (ex: https://...), separate prin spațiu, virgulă sau rând nou."
+            )
             return
-        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
+
+        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", ("\n".join(sites), chat_id))
         db.commit()
         context.user_data.pop("pending_action", None)
-        await update.message.reply_text("Site salvat ✔")
+        await update.message.reply_text(f"{len(sites)} site-uri salvate ✔")
         return
 
     if pending_action == "set_keyword":
@@ -114,7 +136,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "Set Site":
         context.user_data["pending_action"] = "set_site"
-        await update.message.reply_text("Trimite URL-ul paginii de monitorizat.")
+        await update.message.reply_text(
+            "Trimite unul sau mai multe URL-uri de monitorizat (separate prin spațiu, virgulă sau rând nou)."
+        )
         return
 
     if text == "Set Keyword":
@@ -151,10 +175,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         status = "🟢 Active" if data[4] == 1 else "🔴 Oprite"
 
+        sites_display = data[0].replace("\n", "\n- ") if data[0] else "-"
+
         await update.message.reply_text(
             f"Config:\n"
             f"Status: {status}\n"
-            f"Site: {data[0]}\n"
+            f"Site-uri:\n- {sites_display}\n"
             f"Keyword: {data[1]}\n"
             f"Min: {data[2]}\n"
             f"Max: {data[3]}"
@@ -173,61 +199,64 @@ async def monitor(app):
             if active == 0 or not site:
                 continue
 
-            try:
-                headers = {"User-Agent": "Mozilla/5.0"}
-                r = requests.get(site, headers=headers, timeout=10)
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, "lxml")
+            sites = parse_sites_input(site)
 
-                links = soup.find_all("a")
+            for site_url in sites:
+                try:
+                    headers = {"User-Agent": "Mozilla/5.0"}
+                    r = requests.get(site_url, headers=headers, timeout=10)
+                    r.raise_for_status()
+                    soup = BeautifulSoup(r.text, "lxml")
 
-                for link in links:
-                    title_raw = link.get_text(strip=True)
-                    href = link.get("href")
+                    links = soup.find_all("a")
 
-                    if not href:
-                        continue
+                    for link in links:
+                        title_raw = link.get_text(strip=True)
+                        href = link.get("href")
 
-                    href = urljoin(site, href)
-                    scheme = urlparse(href).scheme
-                    if scheme not in {"http", "https"}:
-                        continue
-
-                    title = normalize_text(title_raw)
-
-                    if keyword:
-                        words = normalize_text(keyword).split()
-                        if not all(word in title for word in words):
+                        if not href:
                             continue
 
-                    parent_text = normalize_text(link.parent.get_text(" ", strip=True))
-                    price = parse_price(parent_text)
-
-                    if price and min_price <= price <= max_price:
-                        cursor.execute(
-                            "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
-                            (chat_id, href)
-                        )
-                        if cursor.fetchone():
+                        href = urljoin(site_url, href)
+                        scheme = urlparse(href).scheme
+                        if scheme not in {"http", "https"}:
                             continue
 
-                        cursor.execute(
-                            "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
-                            (chat_id, href)
-                        )
-                        db.commit()
+                        title = normalize_text(title_raw)
 
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🏠 OFERTĂ NOUĂ\n\n"
-                                 f"{title_raw}\n\n"
-                                 f"💰 Preț: {price}\n"
-                                 f"🔗 {href}"
-                        )
-                        break
+                        if keyword:
+                            words = normalize_text(keyword).split()
+                            if not all(word in title for word in words):
+                                continue
 
-            except Exception as e:
-                print("Eroare monitor:", e)
+                        parent_text = normalize_text(link.parent.get_text(" ", strip=True))
+                        price = parse_price(parent_text)
+
+                        if price and min_price <= price <= max_price:
+                            cursor.execute(
+                                "SELECT 1 FROM seen WHERE chat_id=? AND link=?",
+                                (chat_id, href)
+                            )
+                            if cursor.fetchone():
+                                continue
+
+                            cursor.execute(
+                                "INSERT INTO seen (chat_id, link) VALUES (?, ?)",
+                                (chat_id, href)
+                            )
+                            db.commit()
+
+                            await app.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"🏠 OFERTĂ NOUĂ\n\n"
+                                     f"{title_raw}\n\n"
+                                     f"💰 Preț: {price}\n"
+                                     f"🔗 {href}"
+                            )
+                            break
+
+                except Exception as e:
+                    print(f"Eroare monitor pentru {site_url}:", e)
 
         await asyncio.sleep(ALERT_INTERVAL_SECONDS)
 
