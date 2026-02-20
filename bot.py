@@ -50,22 +50,35 @@ RESET_INLINE_KEYBOARD = InlineKeyboardMarkup(
 )
 
 
-# ---------------- CONFIG ---------------- #
+# ================= CONFIG ================= #
 
-def load_config() -> dict[str, Any]:
+def load_all_configs():
     if not CONFIG_FILE.exists():
-        return DEFAULT_CONFIG.copy()
-
+        return {}
     try:
         with CONFIG_FILE.open("r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return DEFAULT_CONFIG.copy()
+        return {}
 
 
-def save_config(config: dict[str, Any]) -> None:
+def save_all_configs(configs):
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+        json.dump(configs, f, ensure_ascii=False, indent=2)
+
+
+def get_user_config(chat_id: str):
+    configs = load_all_configs()
+    if chat_id not in configs:
+        configs[chat_id] = DEFAULT_CONFIG.copy()
+        save_all_configs(configs)
+    return configs[chat_id]
+
+
+def update_user_config(chat_id: str, new_config):
+    configs = load_all_configs()
+    configs[chat_id] = new_config
+    save_all_configs(configs)
 
 
 def config_message(config: dict[str, Any]) -> str:
@@ -81,14 +94,18 @@ def config_message(config: dict[str, Any]) -> str:
     )
 
 
-# ---------------- HANDLERS ---------------- #
+# ================= HANDLERS ================= #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+
+    # creează config pentru user dacă nu există
+    get_user_config(chat_id)
+
     context.user_data["awaiting"] = None
 
     await update.message.reply_text(
-        "Salut! Configurează din butoanele de mai jos sau cu comenzile clasice.\n"
-        "Poți folosi și /showconfig, /resetconfig.",
+        "Salut! Configurează din butoanele de mai jos.",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -99,12 +116,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def show_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    config = load_config()
+    chat_id = str(update.effective_chat.id)
+    config = get_user_config(chat_id)
     await update.message.reply_text(config_message(config))
 
 
 async def reset_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    save_config(DEFAULT_CONFIG.copy())
+    chat_id = str(update.effective_chat.id)
+
+    update_user_config(chat_id, DEFAULT_CONFIG.copy())
     context.user_data["awaiting"] = None
 
     if update.callback_query:
@@ -123,17 +143,18 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not update.message:
         return
 
+    chat_id = str(update.effective_chat.id)
+    config = get_user_config(chat_id)
+
     text = update.message.text.strip()
     lowered = text.lower()
     awaiting = context.user_data.get("awaiting")
-
-    config = load_config()
 
     # ---- BUTTONS ---- #
 
     if lowered == "set site":
         context.user_data["awaiting"] = "site"
-        await update.message.reply_text("Trimite URL-ul site-ului.\nPoți trimite mai multe linii.")
+        await update.message.reply_text("Trimite URL-ul site-ului.")
         return
 
     if lowered == "set keyword":
@@ -143,7 +164,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if lowered == "set price":
         context.user_data["awaiting"] = "price"
-        await update.message.reply_text("Trimite intervalul: MIN MAX (ex: 500 2500)")
+        await update.message.reply_text("Trimite intervalul: MIN MAX")
         return
 
     if lowered == "show config":
@@ -156,35 +177,34 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if lowered == "start alerts":
         config["alerts_enabled"] = True
-        save_config(config)
+        update_user_config(chat_id, config)
         await update.message.reply_text("✅ Alertele au fost pornite.")
         return
 
     if lowered == "stop alerts":
         config["alerts_enabled"] = False
-        save_config(config)
+        update_user_config(chat_id, config)
         await update.message.reply_text("⏸️ Alertele au fost oprite.")
         return
 
     # ---- INPUT AFTER BUTTON ---- #
 
     if awaiting == "site":
-        sites = [line.strip() for line in text.splitlines() if line.strip()]
-        config["sites"] = sites
-        save_config(config)
+        config["sites"] = [text]
+        update_user_config(chat_id, config)
         context.user_data["awaiting"] = None
-        await update.message.reply_text("✅ Site-urile au fost salvate.")
+        await update.message.reply_text("✅ Site salvat.")
         return
 
     if awaiting == "keyword":
         config["keyword"] = text.lower()
-        save_config(config)
+        update_user_config(chat_id, config)
         context.user_data["awaiting"] = None
         await update.message.reply_text("✅ Keyword salvat.")
         return
 
     if awaiting == "price":
-        parts = text.replace(",", " ").split()
+        parts = text.split()
         if len(parts) != 2 or not all(p.isdigit() for p in parts):
             await update.message.reply_text("Format invalid. Folosește: MIN MAX")
             return
@@ -197,15 +217,15 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         config["min"] = min_price
         config["max"] = max_price
-        save_config(config)
+        update_user_config(chat_id, config)
         context.user_data["awaiting"] = None
         await update.message.reply_text("✅ Interval salvat.")
         return
 
-    await update.message.reply_text("Comandă necunoscută. Folosește butoanele.")
+    await update.message.reply_text("Comandă necunoscută.")
 
 
-# ---------------- MAIN ---------------- #
+# ================= MAIN ================= #
 
 def main() -> None:
     token = os.getenv("TELEGRAM_TOKEN")
@@ -221,7 +241,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_reset_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
 
-    logger.info("=== VERSIUNE NOUA BOT.PY ===")
+    logger.info("=== BOT MULTI-USER PORNIT ===")
     app.run_polling()
 
 
