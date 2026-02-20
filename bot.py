@@ -4,12 +4,11 @@ import json
 from pathlib import Path
 from typing import Dict, Any
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
     filters,
 )
@@ -68,18 +67,18 @@ def update_user(chat_id: int, data: Dict[str, Any]) -> None:
 
 # ---------------- MENU ----------------
 
-def main_menu() -> InlineKeyboardMarkup:
+
+def main_menu() -> ReplyKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("Set Keyword", callback_data="set_keyword")],
-        [InlineKeyboardButton("Set Price Range", callback_data="set_price")],
-        [InlineKeyboardButton("Add Site", callback_data="add_site")],
-        [InlineKeyboardButton("View Settings", callback_data="view_settings")],
-        [InlineKeyboardButton("Toggle Alerts", callback_data="toggle_alerts")],
+        [KeyboardButton("Set Site"), KeyboardButton("Set Keyword")],
+        [KeyboardButton("Set Price"), KeyboardButton("Show Config")],
+        [KeyboardButton("Start Alerts"), KeyboardButton("Stop Alerts")],
     ]
-    return InlineKeyboardMarkup(keyboard)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True)
 
 
 # ---------------- COMMANDS ----------------
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del context
@@ -87,57 +86,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Bot activ.", reply_markup=main_menu())
 
 
-# ---------------- CALLBACK HANDLER ----------------
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-
-    await query.answer()
-
-    chat = update.effective_chat
-    if not chat:
-        return
-
-    chat_id = chat.id
-    user = get_user(chat_id)
-
-    if query.data == "set_keyword":
-        context.user_data["state"] = "waiting_keyword"
-        await query.message.reply_text("Trimite keyword:")
-
-    elif query.data == "set_price":
-        context.user_data["state"] = "waiting_price"
-        await query.message.reply_text("Trimite min și max separate prin spațiu (ex: 1000 5000):")
-
-    elif query.data == "add_site":
-        if len(user["sites"]) >= 5:
-            await query.message.reply_text("Ai deja 5 site-uri.")
-        else:
-            context.user_data["state"] = "waiting_site"
-            await query.message.reply_text("Trimite URL site:")
-
-    elif query.data == "view_settings":
-        msg = (
-            f"Keyword: {user['keyword']}\n"
-            f"Min: {user['min']}\n"
-            f"Max: {user['max']}\n"
-            f"Sites: {user['sites']}\n"
-            f"Alerts: {user['alerts_enabled']}"
-        )
-        await query.message.reply_text(msg)
-
-    elif query.data == "toggle_alerts":
-        user["alerts_enabled"] = not user["alerts_enabled"]
-        update_user(chat_id, user)
-        await query.message.reply_text(f"Alerts: {user['alerts_enabled']}")
-
-    if query.message:
-        await query.message.reply_text("Alege o opțiune:", reply_markup=main_menu())
-
-
 # ---------------- MESSAGE HANDLER ----------------
+
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message or not update.effective_chat:
@@ -146,16 +96,62 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = get_user(chat_id)
     state = context.user_data.get("state")
+    text = (update.effective_message.text or "").strip()
 
+    # 1) Actions from bottom keyboard
+    if text == "Set Keyword":
+        context.user_data["state"] = "waiting_keyword"
+        await update.effective_message.reply_text("Trimite keyword:", reply_markup=main_menu())
+        return
+
+    if text == "Set Price":
+        context.user_data["state"] = "waiting_price"
+        await update.effective_message.reply_text(
+            "Trimite min și max separate prin spațiu (ex: 1000 5000):", reply_markup=main_menu()
+        )
+        return
+
+    if text == "Set Site":
+        if len(user["sites"]) >= 5:
+            await update.effective_message.reply_text("Ai deja 5 site-uri.", reply_markup=main_menu())
+        else:
+            context.user_data["state"] = "waiting_site"
+            await update.effective_message.reply_text("Trimite URL site:", reply_markup=main_menu())
+        return
+
+    if text == "Show Config":
+        msg = (
+            f"Keyword: {user['keyword']}\n"
+            f"Min: {user['min']}\n"
+            f"Max: {user['max']}\n"
+            f"Sites: {user['sites']}\n"
+            f"Alerts: {user['alerts_enabled']}"
+        )
+        await update.effective_message.reply_text(msg, reply_markup=main_menu())
+        return
+
+    if text == "Start Alerts":
+        user["alerts_enabled"] = True
+        update_user(chat_id, user)
+        await update.effective_message.reply_text("Alerts: True", reply_markup=main_menu())
+        return
+
+    if text == "Stop Alerts":
+        user["alerts_enabled"] = False
+        update_user(chat_id, user)
+        await update.effective_message.reply_text("Alerts: False", reply_markup=main_menu())
+        return
+
+    # 2) Stateful input
     if state == "waiting_keyword":
-        user["keyword"] = update.effective_message.text.lower()
+        user["keyword"] = text.lower()
         update_user(chat_id, user)
         context.user_data["state"] = None
         await update.effective_message.reply_text("Keyword set.", reply_markup=main_menu())
 
     elif state == "waiting_price":
         try:
-            parts = update.effective_message.text.split()
+            parts = text.split()
             if len(parts) != 2:
                 raise ValueError("Expected exactly two values")
 
@@ -175,13 +171,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = None
 
     elif state == "waiting_site":
-        user["sites"].append(update.effective_message.text.strip())
+        user["sites"].append(text)
         update_user(chat_id, user)
         context.user_data["state"] = None
         await update.effective_message.reply_text("Site added.", reply_markup=main_menu())
 
 
 # ---------------- SCRAPER ----------------
+
 
 async def check_user_sites(chat_id: int, user: Dict[str, Any], app):
     if not user["alerts_enabled"] or not user["sites"]:
@@ -208,6 +205,7 @@ async def check_user_sites(chat_id: int, user: Dict[str, Any], app):
 
 # ---------------- SCHEDULER ----------------
 
+
 async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
     users = load_users()
     for chat_id_str, user in users.items():
@@ -223,10 +221,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ---------------- MAIN ----------------
 
+
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     app.add_error_handler(error_handler)
