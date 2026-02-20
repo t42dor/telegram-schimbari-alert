@@ -8,6 +8,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+ALERT_INTERVAL_SECONDS = int(os.getenv("ALERT_INTERVAL_SECONDS", "60"))
 
 db = sqlite3.connect("data.db", check_same_thread=False)
 cursor = db.cursor()
@@ -79,7 +80,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Site salvat ✔")
 
     elif text.lower().startswith("keyword"):
-        keyword = text.split(" ", 1)[1]
+        parts = text.split(" ", 1)
+        if len(parts) < 2 or not parts[1].strip():
+            await update.message.reply_text("Format corect: keyword apartament 2 camere")
+            return
+        keyword = parts[1].strip()
         cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (keyword, chat_id))
         db.commit()
         await update.message.reply_text("Keyword salvat ✔")
@@ -93,7 +98,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             db.commit()
             await update.message.reply_text("Interval preț salvat ✔")
-        except:
+        except ValueError:
             await update.message.reply_text("Format corect: price 0 100000")
 
     elif text == "Stop Alerts":
@@ -129,8 +134,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def monitor(app):
     while True:
-        await asyncio.sleep(60)
-
         cursor.execute("SELECT chat_id, site, keyword, min_price, max_price, active FROM users")
         users = cursor.fetchall()
 
@@ -142,6 +145,7 @@ async def monitor(app):
             try:
                 headers = {"User-Agent": "Mozilla/5.0"}
                 r = requests.get(site, headers=headers, timeout=10)
+                r.raise_for_status()
                 soup = BeautifulSoup(r.text, "lxml")
 
                 links = soup.find_all("a")
@@ -188,6 +192,8 @@ async def monitor(app):
 
             except Exception as e:
                 print("Eroare monitor:", e)
+
+        await asyncio.sleep(ALERT_INTERVAL_SECONDS)
 
 
 # ------------------ START APP ------------------
