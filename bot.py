@@ -68,6 +68,64 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     db.commit()
 
+    # Always let keyboard actions override any pending input state.
+    # This avoids getting "stuck" in one flow (ex: set_site) where every next
+    # button press is interpreted as plain text for the previous action.
+    if text == "Set Site":
+        context.user_data["pending_action"] = "set_site"
+        await update.message.reply_text(
+            "Trimite URL-ul paginii pe care vrei monitorizare (ideal pagina de căutare, nu homepage)."
+        )
+        return
+
+    if text == "Set Keyword":
+        context.user_data["pending_action"] = "set_keyword"
+        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
+        return
+
+    if text == "Set Price":
+        context.user_data["pending_action"] = "set_price"
+        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 0 150000).")
+        return
+
+    if text == "Stop Alerts":
+        context.user_data.pop("pending_action", None)
+        cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("🔴 Alertele au fost oprite.")
+        return
+
+    if text == "Start Alerts":
+        context.user_data.pop("pending_action", None)
+        cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("🟢 Alertele au fost activate.")
+        return
+
+    if text == "Show Config":
+        context.user_data.pop("pending_action", None)
+        cursor.execute(
+            "SELECT site, keyword, min_price, max_price, active FROM users WHERE chat_id=?",
+            (chat_id,),
+        )
+        data = cursor.fetchone()
+
+        status = "🟢 Active" if data and data[4] == 1 else "🔴 Oprite"
+
+        if not data:
+            await update.message.reply_text("Nu există configurare încă.")
+            return
+
+        await update.message.reply_text(
+            f"Config:\n"
+            f"Status: {status}\n"
+            f"Site: {data[0]}\n"
+            f"Keyword: {data[1]}\n"
+            f"Min: {data[2]}\n"
+            f"Max: {data[3]}"
+        )
+        return
+
     pending_action = context.user_data.get("pending_action")
     if pending_action == "set_site":
         if not text.startswith("http"):
@@ -104,23 +162,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Format corect: 0 150000")
         return
 
-    if text == "Set Site":
-        context.user_data["pending_action"] = "set_site"
-        await update.message.reply_text(
-            "Trimite URL-ul paginii pe care vrei monitorizare (ideal pagina de căutare, nu homepage)."
-        )
-        return
-
-    if text == "Set Keyword":
-        context.user_data["pending_action"] = "set_keyword"
-        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
-        return
-
-    if text == "Set Price":
-        context.user_data["pending_action"] = "set_price"
-        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 0 150000).")
-        return
-
     if text.startswith("http"):
         cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
         db.commit()
@@ -147,41 +188,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Interval preț salvat ✔")
         except ValueError:
             await update.message.reply_text("Format corect: price 0 100000")
-
-    elif text == "Stop Alerts":
-        cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
-        db.commit()
-        await update.message.reply_text("🔴 Alertele au fost oprite.")
-
-    elif text == "Start Alerts":
-        cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
-        db.commit()
-        await update.message.reply_text("🟢 Alertele au fost activate.")
-
-    elif text == "Show Config":
-        cursor.execute(
-            "SELECT site, keyword, min_price, max_price, active FROM users WHERE chat_id=?",
-            (chat_id,),
-        )
-        data = cursor.fetchone()
-
-        status = "🟢 Active" if data and data[4] == 1 else "🔴 Oprite"
-
-        if not data:
-            await update.message.reply_text("Nu există configurare încă.")
-            return
-
-        await update.message.reply_text(
-            f"Config:\n"
-            f"Status: {status}\n"
-            f"Site: {data[0]}\n"
-            f"Keyword: {data[1]}\n"
-            f"Min: {data[2]}\n"
-            f"Max: {data[3]}"
-        )
-        data = cursor.fetchone()
-
-        status = "🟢 Active" if data and data[4] == 1 else "🔴 Oprite"
 
 # ------------------ MONITOR ------------------
 
