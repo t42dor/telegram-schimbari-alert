@@ -22,8 +22,10 @@ TOKEN = os.environ["TELEGRAM_TOKEN"]
 DATA_FILE = Path("users.json")
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ---------------- DATA LAYER ----------------
+
 
 def load_users() -> Dict[str, Any]:
     if not DATA_FILE.exists():
@@ -31,12 +33,14 @@ def load_users() -> Dict[str, Any]:
     try:
         with DATA_FILE.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except (json.JSONDecodeError, OSError):
         return {}
+
 
 def save_users(data: Dict[str, Any]) -> None:
     with DATA_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
 
 def get_user(chat_id: int) -> Dict[str, Any]:
     users = load_users()
@@ -49,20 +53,22 @@ def get_user(chat_id: int) -> Dict[str, Any]:
             "max": 999999999,
             "sites": [],
             "alerts_enabled": True,
-            "seen": []
+            "seen": [],
         }
         save_users(users)
 
     return users[cid]
+
 
 def update_user(chat_id: int, data: Dict[str, Any]) -> None:
     users = load_users()
     users[str(chat_id)] = data
     save_users(users)
 
+
 # ---------------- MENU ----------------
 
-def main_menu():
+def main_menu() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("Set Keyword", callback_data="set_keyword")],
         [InlineKeyboardButton("Set Price Range", callback_data="set_price")],
@@ -72,21 +78,29 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+
 # ---------------- COMMANDS ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Bot activ.",
-        reply_markup=main_menu()
-    )
+    del context
+    if update.effective_message:
+        await update.effective_message.reply_text("Bot activ.", reply_markup=main_menu())
+
 
 # ---------------- CALLBACK HANDLER ----------------
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not query:
+        return
+
     await query.answer()
 
-    chat_id = query.message.chat_id
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    chat_id = chat.id
     user = get_user(chat_id)
 
     if query.data == "set_keyword":
@@ -119,35 +133,53 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update_user(chat_id, user)
         await query.message.reply_text(f"Alerts: {user['alerts_enabled']}")
 
+    if query.message:
+        await query.message.reply_text("Alege o opțiune:", reply_markup=main_menu())
+
+
 # ---------------- MESSAGE HANDLER ----------------
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
+    if not update.effective_message or not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
     user = get_user(chat_id)
     state = context.user_data.get("state")
 
     if state == "waiting_keyword":
-        user["keyword"] = update.message.text.lower()
+        user["keyword"] = update.effective_message.text.lower()
         update_user(chat_id, user)
         context.user_data["state"] = None
-        await update.message.reply_text("Keyword set.")
+        await update.effective_message.reply_text("Keyword set.", reply_markup=main_menu())
 
     elif state == "waiting_price":
         try:
-            parts = update.message.text.split()
-            user["min"] = int(parts[0])
-            user["max"] = int(parts[1])
+            parts = update.effective_message.text.split()
+            if len(parts) != 2:
+                raise ValueError("Expected exactly two values")
+
+            minimum = int(parts[0])
+            maximum = int(parts[1])
+            if minimum > maximum:
+                raise ValueError("Minimum must not exceed maximum")
+
+            user["min"] = minimum
+            user["max"] = maximum
             update_user(chat_id, user)
-            await update.message.reply_text("Price range set.")
-        except:
-            await update.message.reply_text("Format invalid.")
+            await update.effective_message.reply_text("Price range set.", reply_markup=main_menu())
+        except ValueError:
+            await update.effective_message.reply_text(
+                "Format invalid. Exemplu corect: 1000 5000", reply_markup=main_menu()
+            )
         context.user_data["state"] = None
 
     elif state == "waiting_site":
-        user["sites"].append(update.message.text.strip())
+        user["sites"].append(update.effective_message.text.strip())
         update_user(chat_id, user)
         context.user_data["state"] = None
-        await update.message.reply_text("Site added.")
+        await update.effective_message.reply_text("Site added.", reply_markup=main_menu())
+
 
 # ---------------- SCRAPER ----------------
 
@@ -169,9 +201,10 @@ async def check_user_sites(chat_id: int, user: Dict[str, Any], app):
 
                 await page.close()
             except Exception as e:
-                print("Eroare site:", e)
+                logger.warning("Eroare site %s: %s", site, e)
 
         await browser.close()
+
 
 # ---------------- SCHEDULER ----------------
 
@@ -181,24 +214,28 @@ async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
         try:
             await check_user_sites(int(chat_id_str), user, context.application)
         except Exception as e:
-            print("Eroare user:", e)
+            logger.warning("Eroare user %s: %s", chat_id_str, e)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled exception for update %s", update, exc_info=context.error)
+
 
 # ---------------- MAIN ----------------
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # 1️⃣ CallbackQueryHandler PRIMUL
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    # 2️⃣ CommandHandler
     app.add_handler(CommandHandler("start", start))
-
-    # 3️⃣ MessageHandler ULTIMUL
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    app.add_error_handler(error_handler)
 
     app.job_queue.run_repeating(scheduled_check, interval=60, first=10)
 
     print("=== BOT COMPLET PORNIT ===")
     app.run_polling()
 
+
+if __name__ == "__main__":
+    main()
