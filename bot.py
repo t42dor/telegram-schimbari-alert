@@ -1,12 +1,12 @@
 import os
 import sqlite3
 import asyncio
-import requests
 import unicodedata
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from playwright.async_api import async_playwright
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ALERT_INTERVAL_SECONDS = int(os.getenv("ALERT_INTERVAL_SECONDS", "60"))
@@ -201,11 +201,19 @@ async def monitor(app):
                 continue
 
             try:
-                headers = {"User-Agent": "Mozilla/5.0"}
-                r = requests.get(site, headers=headers, timeout=10)
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, "lxml")
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                    page = await browser.new_page()
+                    await page.goto(site, wait_until="domcontentloaded", timeout=60000)
+                    await page.wait_for_timeout(2500)
+                    html = await page.content()
+                    await page.close()
+                    await browser.close()
 
+                soup = BeautifulSoup(html, "lxml")
                 links = soup.find_all("a")
 
                 for link in links:
