@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
     chat_id INTEGER PRIMARY KEY,
     site TEXT,
     keyword TEXT,
-    min_price INTEGER,
-    max_price INTEGER,
+    min_price INTEGER DEFAULT 0,
+    max_price INTEGER DEFAULT 999999999,
     active INTEGER DEFAULT 1
 )
 """)
@@ -70,14 +70,62 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text.strip()
     chat_id = update.effective_chat.id
 
     cursor.execute(
-        "INSERT OR IGNORE INTO users (chat_id, min_price, max_price, active) VALUES (?, 0, 999999999, 1)",
+        "INSERT OR IGNORE INTO users (chat_id) VALUES (?)",
         (chat_id,)
     )
     db.commit()
+
+    pending_action = context.user_data.get("pending_action")
+
+    if pending_action == "set_site":
+        if not text.startswith("http"):
+            await update.message.reply_text("Trimite un URL complet (ex: https://...)")
+            return
+        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
+        db.commit()
+        context.user_data.pop("pending_action", None)
+        await update.message.reply_text("Site salvat ✔")
+        return
+
+    if pending_action == "set_keyword":
+        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (text, chat_id))
+        db.commit()
+        context.user_data.pop("pending_action", None)
+        await update.message.reply_text("Keyword salvat ✔")
+        return
+
+    if pending_action == "set_price":
+        try:
+            minp, maxp = text.split()
+            cursor.execute(
+                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
+                (int(minp), int(maxp), chat_id)
+            )
+            db.commit()
+            context.user_data.pop("pending_action", None)
+            await update.message.reply_text("Interval preț salvat ✔")
+        except ValueError:
+            await update.message.reply_text("Format corect: 0 150000")
+        return
+
+    if text == "Set Site":
+        context.user_data["pending_action"] = "set_site"
+        await update.message.reply_text("Trimite URL-ul paginii de monitorizat.")
+        return
+
+    if text == "Set Keyword":
+        context.user_data["pending_action"] = "set_keyword"
+        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
+        return
+
+    if text == "Set Price":
+        context.user_data["pending_action"] = "set_price"
+        await update.message.reply_text("Trimite intervalul: MIN MAX")
+        return
 
     if text == "Stop Alerts":
         cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
@@ -89,35 +137,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
         db.commit()
         await update.message.reply_text("🟢 Alertele au fost activate.")
-        return
-
-    if text.startswith("http"):
-        cursor.execute("UPDATE users SET site=? WHERE chat_id=?", (text, chat_id))
-        db.commit()
-        await update.message.reply_text("Site salvat ✔")
-        return
-
-    if text.lower().startswith("keyword"):
-        parts = text.split(" ", 1)
-        if len(parts) < 2:
-            await update.message.reply_text("Format: keyword apartament brasov")
-            return
-        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (parts[1], chat_id))
-        db.commit()
-        await update.message.reply_text("Keyword salvat ✔")
-        return
-
-    if text.lower().startswith("price"):
-        try:
-            _, minp, maxp = text.split()
-            cursor.execute(
-                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
-                (int(minp), int(maxp), chat_id)
-            )
-            db.commit()
-            await update.message.reply_text("Interval preț salvat ✔")
-        except:
-            await update.message.reply_text("Format: price 0 150000")
         return
 
     if text == "Show Config":
