@@ -112,6 +112,38 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu()
         )
 
+def load_users():
+    if not DATA_FILE.exists():
+        return {}
+
+    try:
+        with DATA_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(data):
+    with DATA_FILE.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def get_user(chat_id):
+    users = load_users()
+    if str(chat_id) not in users:
+        users[str(chat_id)] = {
+            "keyword": "",
+            "min": 0,
+            "max": 999999999,
+            "sites": [],
+            "alerts_enabled": True,
+            "seen": []
+        }
+        save_users(users)
+    return users[str(chat_id)]
+
+def update_user(chat_id, user_data):
+    users = load_users()
+    users[str(chat_id)] = user_data
+    save_users(users)
 
 # ---------------- SCHEDULER ----------------
 
