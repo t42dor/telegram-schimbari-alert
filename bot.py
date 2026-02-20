@@ -94,12 +94,26 @@ def config_message(config: dict[str, Any]) -> str:
     )
 
 
+# ================= ALERT JOB ================= #
+
+async def scheduled_check(context: ContextTypes.DEFAULT_TYPE):
+    configs = load_all_configs()
+
+    for chat_id, user_config in configs.items():
+        if not user_config.get("alerts_enabled", True):
+            continue
+
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="⏰ Test alert automată (rulează la 60 secunde)"
+        )
+
+
 # ================= HANDLERS ================= #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
 
-    # creează config pentru user dacă nu există
     get_user_config(chat_id)
 
     context.user_data["awaiting"] = None
@@ -150,8 +164,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lowered = text.lower()
     awaiting = context.user_data.get("awaiting")
 
-    # ---- BUTTONS ---- #
-
     if lowered == "set site":
         context.user_data["awaiting"] = "site"
         await update.message.reply_text("Trimite URL-ul site-ului.")
@@ -186,8 +198,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         update_user_config(chat_id, config)
         await update.message.reply_text("⏸️ Alertele au fost oprite.")
         return
-
-    # ---- INPUT AFTER BUTTON ---- #
 
     if awaiting == "site":
         config["sites"] = [text]
@@ -241,7 +251,11 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_reset_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
 
-    logger.info("=== BOT MULTI-USER PORNIT ===")
+    # PORNIM JOB AUTOMAT LA 60 SECUNDE
+    job_queue = app.job_queue
+    job_queue.run_repeating(scheduled_check, interval=60, first=10)
+
+    logger.info("=== BOT MULTI-USER CU ALERTA AUTOMATA PORNIT ===")
     app.run_polling()
 
 
