@@ -1,17 +1,20 @@
 import os
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+import logging
+import json
+from pathlib import Path
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
+    ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    ContextTypes,
     filters,
 )
+
+DATA_FILE = Path("users.json")
+
 
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 
