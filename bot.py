@@ -221,7 +221,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_reset_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
 
-    logger.info("Botul pornește...")
+    logger.info("=== VERSIUNE NOUA BOT.PY ===")
     app.run_polling()
 
 
