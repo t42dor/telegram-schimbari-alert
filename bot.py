@@ -51,6 +51,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ["Set Site", "Set Keyword"],
         ["Set Price", "Show Config"],
         ["Start Alerts", "Stop Alerts"],
+        ["Reset Config"],
     ]
     await update.message.reply_text(
         "Bot activ. Alege o opțiune:",
@@ -124,6 +125,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Min: {data[2]}\n"
             f"Max: {data[3]}"
         )
+        return
+
+    if text == "Reset Config":
+        context.user_data.pop("pending_action", None)
+        cursor.execute(
+            "UPDATE users SET site=NULL, keyword=NULL, min_price=0, max_price=999999999, active=1 WHERE chat_id=?",
+            (chat_id,),
+        )
+        cursor.execute("DELETE FROM seen WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("♻️ Config resetată.")
         return
 
     pending_action = context.user_data.get("pending_action")
