@@ -28,6 +28,14 @@ def main_menu():
 # ---------------- START ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+
+    context.user_data["min"] = 0
+    context.user_data["max"] = 999999999
+    context.user_data["keyword"] = ""
+    context.user_data["alerts_enabled"] = True
+    context.user_data["state"] = None
+
     await update.message.reply_text(
         "Bot pornit. Alege:",
         reply_markup=main_menu()
@@ -37,23 +45,69 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # FOARTE IMPORTANT
+    await query.answer()
 
     data = query.data
 
     if data == "price":
-        await query.edit_message_text("Ai apăsat Set Price")
+        context.user_data["state"] = "awaiting_price"
+        await query.edit_message_text("Introdu: min max (ex: 1000 5000)")
 
     elif data == "keyword":
-        await query.edit_message_text("Ai apăsat Set Keyword")
+        context.user_data["state"] = "awaiting_keyword"
+        await query.edit_message_text("Introdu cuvânt cheie:")
 
     elif data == "alert":
-        await query.edit_message_text("Ai apăsat Toggle Alert")
+        current = context.user_data.get("alerts_enabled", True)
+        context.user_data["alerts_enabled"] = not current
+
+        status = "ACTIVĂ" if context.user_data["alerts_enabled"] else "OPRITĂ"
+
+        await query.edit_message_text(
+            f"Alerta este acum: {status}",
+            reply_markup=main_menu()
+        )
 
 # ---------------- TEXT HANDLER ----------------
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Am primit: " + update.message.text)
+    state = context.user_data.get("state")
+
+    if state == "awaiting_price":
+        try:
+            parts = update.message.text.split()
+            min_price = int(parts[0])
+            max_price = int(parts[1])
+
+            context.user_data["min"] = min_price
+            context.user_data["max"] = max_price
+            context.user_data["state"] = None
+
+            await update.message.reply_text(
+                f"Preț setat: {min_price} - {max_price}",
+                reply_markup=main_menu()
+            )
+        except:
+            await update.message.reply_text(
+                "Format invalid. Exemplu: 1000 5000"
+            )
+
+    elif state == "awaiting_keyword":
+        keyword = update.message.text.strip().lower()
+
+        context.user_data["keyword"] = keyword
+        context.user_data["state"] = None
+
+        await update.message.reply_text(
+            f"Cuvânt cheie setat: {keyword}",
+            reply_markup=main_menu()
+        )
+
+    else:
+        await update.message.reply_text(
+            "Nu sunt în modul de setare. Folosește butoanele.",
+            reply_markup=main_menu()
+        )
 
 # ---------------- MAIN ----------------
 
@@ -64,7 +118,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    print("=== BOT MINIMAL PORNIT ===")
+    print("=== BOT CU STATE FUNCTIONAL ===")
 
     app.run_polling()
 
