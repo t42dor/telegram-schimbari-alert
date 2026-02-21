@@ -21,10 +21,10 @@ ALERT_INTERVAL_SECONDS = int(os.getenv("ALERT_INTERVAL_SECONDS", "60"))
 MAX_SITES_PER_USER = 5
 
 if not TOKEN:
-    print("DEBUG: EROARE CRITICĂ - TELEGRAM_TOKEN nu este setat în environment variables!")
+    print("DEBUG: EROARE CRITICĂ - TELEGRAM_TOKEN nu este setat!")
     raise RuntimeError("Missing TELEGRAM_TOKEN environment variable")
 
-print(f"DEBUG: Token încărcat (primele 10 caractere vizibile): {TOKEN[:10]}... (restul ascuns)")
+print(f"DEBUG: Token încărcat (primele 10 caractere): {TOKEN[:10]}...")
 
 print(f"DEBUG: Interval alerte: {ALERT_INTERVAL_SECONDS} secunde")
 print(f"DEBUG: Max site-uri per user: {MAX_SITES_PER_USER}")
@@ -34,7 +34,7 @@ db = sqlite3.connect("data.db", check_same_thread=False)
 cursor = db.cursor()
 
 cursor.execute(
-    "CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, site TEXT, keyword TEXT, min_price INTEGER, max_price INTEGER, active INTEGER DEFAULT 1)"
+    "CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, keyword TEXT, min_price INTEGER DEFAULT 0, max_price INTEGER DEFAULT 999999999, active INTEGER DEFAULT 1)"
 )
 cursor.execute("CREATE TABLE IF NOT EXISTS seen (chat_id INTEGER, link TEXT)")
 cursor.execute(
@@ -54,20 +54,21 @@ def ensure_user(chat_id: int) -> None:
 def migrate_legacy_single_site(chat_id: int) -> None:
     cursor.execute("SELECT site FROM users WHERE chat_id=?", (chat_id,))
     row = cursor.fetchone()
-    if not row or not row[0]:
-        return
-    cursor.execute(
-        "INSERT OR IGNORE INTO user_sites (chat_id, site) VALUES (?, ?)",
-        (chat_id, row[0]),
-    )
-    cursor.execute("UPDATE users SET site=NULL WHERE chat_id=?", (chat_id,))
-    db.commit()
+    if row and row[0]:
+        cursor.execute(
+            "INSERT OR IGNORE INTO user_sites (chat_id, site) VALUES (?, ?)",
+            (chat_id, row[0]),
+        )
+        cursor.execute("UPDATE users SET site=NULL WHERE chat_id=?", (chat_id,))
+        db.commit()
 
 def get_user_sites(chat_id: int) -> list[str]:
     cursor.execute(
         "SELECT site FROM user_sites WHERE chat_id=? ORDER BY rowid ASC", (chat_id,)
     )
-    return [row[0] for row in cursor.fetchall()]
+    rows = cursor.fetchall()
+    print(f"DEBUG: get_user_sites pentru {chat_id} → găsit {len(rows)} site-uri")
+    return [row[0] for row in rows]
 
 # ------------------ UTIL ------------------
 def normalize_text(text: str | None) -> str:
@@ -78,8 +79,15 @@ def normalize_text(text: str | None) -> str:
     return "".join(c for c in text if unicodedata.category(c) != "Mn")
 
 def parse_price(text: str) -> int | None:
-    digits = "".join(c for c in text if c.isdigit())
-    return int(digits) if digits else None
+    text_clean = text.lower().replace(" ", "").replace(",", "").replace(".", "")
+    digits = "".join(c for c in text_clean if c.isdigit())
+    if not digits:
+        return None
+    price = int(digits)
+    # Detectăm dacă e preț în mii (ex: 120.000 → 120000)
+    if "mii" in text_clean or "k" in text_clean or len(digits) >= 6:
+        price = int(digits)  # deja corect
+    return price
 
 # ------------------ TELEGRAM UI ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,20 +102,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Bot activ. Configurează până la 5 site-uri:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
-    print(f"DEBUG: User {update.message.chat_id} a apelat /start și a primit meniu")
+    print(f"DEBUG: User {update.message.chat_id} a apelat /start")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     chat_id = update.message.chat_id
-    
-    print(f"DEBUG: MESSAGE HANDLER apelat! Mesaj primit: '{text}' de la user {chat_id}")
+    print(f"DEBUG: MESSAGE HANDLER apelat! Mesaj: '{text}' de la {chat_id}")
     print(f"DEBUG: Pending action curent: {context.user_data.get('pending_action')}")
 
     ensure_user(chat_id)
     migrate_legacy_single_site(chat_id)
 
     if text == "Add Site":
-        print("DEBUG: Intrat pe buton Add Site")
+        print("DEBUG: Intrat pe Add Site")
         context.user_data["pending_action"] = "add_site"
         await update.message.reply_text(
             "Trimite URL-ul paginii de căutare pe care vrei monitorizare. (maxim 5 site-uri)"
@@ -115,13 +122,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Remove Site":
-        print("DEBUG: Intrat pe buton Remove Site")
+        print("DEBUG: Intrat pe Remove Site")
         context.user_data["pending_action"] = "remove_site"
         await update.message.reply_text("Trimite URL-ul exact pe care vrei să îl ștergi.")
         return
 
     if text == "List Sites":
-        print("DEBUG: Intrat pe buton List Sites")
+        print("DEBUG: Intrat pe List Sites")
         context.user_data.pop("pending_action", None)
         sites = get_user_sites(chat_id)
         if not sites:
@@ -132,19 +139,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Set Keyword":
-        print("DEBUG: Intrat pe buton Set Keyword")
+        print("DEBUG: Intrat pe Set Keyword")
         context.user_data["pending_action"] = "set_keyword"
-        await update.message.reply_text("Trimite keyword-ul (ex: apartament 2 camere brasov).")
+        await update.message.reply_text("Trimite keyword-ul (ex: apartament brasov).")
         return
 
     if text == "Set Price":
-        print("DEBUG: Intrat pe buton Set Price")
+        print("DEBUG: Intrat pe Set Price")
         context.user_data["pending_action"] = "set_price"
-        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 30000 150000).")
+        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 30000 150000).\nDacă nu vrei filtru de preț, pune 0 999999999")
         return
 
     if text == "Stop Alerts":
-        print("DEBUG: Intrat pe buton Stop Alerts")
+        print("DEBUG: Intrat pe Stop Alerts")
         context.user_data.pop("pending_action", None)
         cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
         db.commit()
@@ -152,7 +159,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Start Alerts":
-        print("DEBUG: Intrat pe buton Start Alerts")
+        print("DEBUG: Intrat pe Start Alerts")
         context.user_data.pop("pending_action", None)
         cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
         db.commit()
@@ -160,7 +167,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Show Config":
-        print("DEBUG: Intrat pe buton Show Config")
+        print("DEBUG: Intrat pe Show Config")
         context.user_data.pop("pending_action", None)
         cursor.execute(
             "SELECT keyword, min_price, max_price, active FROM users WHERE chat_id=?",
@@ -181,10 +188,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "Reset Config":
-        print("DEBUG: Intrat pe buton Reset Config")
+        print("DEBUG: Intrat pe Reset Config")
         context.user_data.pop("pending_action", None)
         cursor.execute(
-            "UPDATE users SET site=NULL, keyword=NULL, min_price=0, max_price=999999999, active=1 WHERE chat_id=?",
+            "UPDATE users SET keyword=NULL, min_price=0, max_price=999999999, active=1 WHERE chat_id=?",
             (chat_id,),
         )
         cursor.execute("DELETE FROM user_sites WHERE chat_id=?", (chat_id,))
@@ -197,7 +204,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"DEBUG: Pending action după if-uri principale: {pending_action}")
 
     if pending_action == "add_site":
-        print("DEBUG: Procesare add_site - URL primit: " + text)
+        print("DEBUG: Procesare add_site - URL: " + text)
         if not text.startswith("http"):
             await update.message.reply_text("Trimite un URL complet (ex: https://site.ro/cautare).")
             return
@@ -213,13 +220,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.commit()
             context.user_data.pop("pending_action", None)
             await update.message.reply_text("Site adăugat ✔")
-            print(f"DEBUG: Site adăugat cu succes: {text} pentru user {chat_id}")
+            print(f"DEBUG: Site adăugat OK: {text}")
         except sqlite3.IntegrityError:
             await update.message.reply_text("Site-ul există deja în listă.")
         return
 
     if pending_action == "remove_site":
-        print("DEBUG: Procesare remove_site - URL de șters: " + text)
+        print("DEBUG: Procesare remove_site - URL: " + text)
         cursor.execute(
             "DELETE FROM user_sites WHERE chat_id=? AND site=?",
             (chat_id, text),
@@ -229,7 +236,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if deleted:
             context.user_data.pop("pending_action", None)
             await update.message.reply_text("Site șters ✔")
-            print(f"DEBUG: Site șters cu succes: {text}")
+            print(f"DEBUG: Site șters OK: {text}")
         else:
             await update.message.reply_text("Nu am găsit acest URL în lista ta.")
         return
@@ -262,14 +269,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Interval preț salvat ✔")
             print(f"DEBUG: Preț salvat: {min_price} - {max_price}")
         except ValueError:
-            await update.message.reply_text("Format corect: 30000 150000")
+            await update.message.reply_text("Format corect: 30000 150000\nSau 0 999999999 dacă nu vrei filtru de preț")
         return
 
-    print(f"DEBUG: Handler terminat - mesaj '{text}' nu a fost procesat ca buton sau pending action")
+    print(f"DEBUG: Handler terminat - mesaj '{text}' nu a fost procesat ca buton sau pending")
 
 # ------------------ MONITOR ------------------
 async def monitor(app):
-    print("DEBUG: Funcția monitor a început - buclă infinită pornită")
+    print("DEBUG: Monitor pornit - buclă infinită")
     while True:
         print("DEBUG: Ciclu monitor nou - verific users active...")
         cursor.execute(
@@ -280,39 +287,40 @@ async def monitor(app):
 
         try:
             async with async_playwright() as p:
-                print("DEBUG: Pornesc browser Chromium headless...")
+                print("DEBUG: Pornesc browser...")
                 browser = await p.chromium.launch(
                     headless=True,
                     args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
-                print("DEBUG: Browser pornit cu succes")
+                print("DEBUG: Browser pornit")
 
                 for chat_id, keyword, min_price, max_price in users:
-                    sites = get_user_sites(chat_id)[:MAX_SITES_PER_USER]
+                    sites = get_user_sites(chat_id)
                     if not sites:
-                        print(f"DEBUG: User {chat_id} nu are site-uri, sar peste")
+                        print(f"DEBUG: User {chat_id} nu are site-uri")
                         continue
 
                     normalized_words = normalize_text(keyword).split() if keyword else []
                     print(f"DEBUG: Caut pentru user {chat_id} - keyword '{keyword}', preț {min_price}-{max_price}")
 
                     for site in sites:
-                        print(f"DEBUG: Accesez site: {site}")
+                        print(f"DEBUG: Accesez: {site}")
                         page = await browser.new_page()
                         try:
                             await page.goto(site, wait_until="domcontentloaded", timeout=60000)
-                            await page.wait_for_timeout(2500)
+                            await page.wait_for_timeout(10000)  # crescut pentru JS
+                            await page.wait_for_load_state('networkidle', timeout=30000)
                             html = await page.content()
-                            print(f"DEBUG: HTML încărcat (lungime: {len(html)} caractere)")
+                            print(f"DEBUG: HTML încărcat ({len(html)} caractere)")
                         except Exception as e:
-                            print(f"DEBUG: Eroare la încărcarea site-ului {site}: {e}")
+                            print(f"DEBUG: Eroare încărcare {site}: {e}")
                             await page.close()
                             continue
                         await page.close()
 
                         soup = BeautifulSoup(html, "lxml")
                         links = soup.find_all("a")
-                        print(f"DEBUG: Găsit {len(links)} tag-uri <a> pe pagină")
+                        print(f"DEBUG: Găsit {len(links)} tag-uri <a>")
 
                         for link in links:
                             title_raw = link.get_text(strip=True)
@@ -320,20 +328,29 @@ async def monitor(app):
                             if not href or not title_raw:
                                 continue
                             href = urljoin(site, href)
-                            scheme = urlparse(href).scheme
-                            if scheme not in {"http", "https"}:
+                            if urlparse(href).scheme not in {"http", "https"}:
                                 continue
 
                             normalized_title = normalize_text(title_raw)
                             parent_text = normalize_text(link.parent.get_text(" ", strip=True))
+                            combined_text = f"{normalized_title} {parent_text}"
 
+                            # Verificăm keyword-ul
                             if normalized_words and not all(
-                                word in f"{normalized_title} {parent_text}" for word in normalized_words
+                                word in combined_text for word in normalized_words
                             ):
                                 continue
 
                             price = parse_price(parent_text)
-                            if price is None or not (min_price <= price <= max_price):
+                            print(f"DEBUG: Preț detectat: {price} din text: '{parent_text[:80]}...'")
+
+                            # Dacă nu avem interval strict de preț → trimitem chiar dacă prețul lipsește
+                            price_ok = True
+                            if min_price != 0 or max_price != 999999999:
+                                if price is None or not (min_price <= price <= max_price):
+                                    price_ok = False
+
+                            if not price_ok:
                                 continue
 
                             cursor.execute(
@@ -349,42 +366,42 @@ async def monitor(app):
                             )
                             db.commit()
 
-                            print(f"DEBUG: OFERTĂ NOUĂ DETECTATĂ - {title_raw} | Preț: {price} | Link: {href}")
-
+                            price_text = f"💰 Preț: {price}" if price is not None else "💰 Preț: nedetectat"
                             await app.bot.send_message(
                                 chat_id=chat_id,
                                 text=(
                                     "🏠 OFERTĂ NOUĂ\n\n"
                                     f"{title_raw}\n\n"
-                                    f"💰 Preț: {price}\n"
+                                    f"{price_text}\n"
                                     f"🌐 Site: {site}\n"
                                     f"🔗 {href}"
                                 ),
                             )
-                            break
+                            print(f"DEBUG: ALERTĂ TRIMISĂ: {title_raw} | Preț: {price} | {href}")
+                            break  # oprește după prima alertă pe site (poți scoate break-ul dacă vrei toate)
 
                 await browser.close()
-                print("DEBUG: Browser închis după ciclu")
+                print("DEBUG: Browser închis")
         except Exception as e:
-            print(f"DEBUG: Eroare majoră în monitor loop: {e}")
+            print(f"DEBUG: Eroare în monitor: {e}")
 
-        print(f"DEBUG: Ciclu terminat - sleep {ALERT_INTERVAL_SECONDS} secunde")
+        print(f"DEBUG: Ciclu terminat - sleep {ALERT_INTERVAL_SECONDS}s")
         await asyncio.sleep(ALERT_INTERVAL_SECONDS)
 
 # ------------------ START APP ------------------
-print("DEBUG: Construiesc ApplicationBuilder...")
+print("DEBUG: Construiesc Application...")
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
 async def on_startup(app):
-    print("DEBUG: ON_STARTUP apelat - creez task pentru monitor...")
+    print("DEBUG: ON_STARTUP - creez monitor...")
     asyncio.create_task(monitor(app))
-    print("DEBUG: Task monitor creat cu succes")
+    print("DEBUG: Task monitor creat")
 
 app.post_init = on_startup
 
-print("DEBUG: Încep polling-ul Telegram acum...")
+print("DEBUG: Pornesc polling-ul...")
 app.run_polling()
-print("DEBUG: run_polling a terminat neașteptat (nu ar trebui să ajungem aici)")
+print("DEBUG: run_polling terminat (nu ar trebui să ajungem aici)")
