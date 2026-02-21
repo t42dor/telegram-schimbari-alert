@@ -184,6 +184,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending = context.user_data.get("pending")
 
     if pending == "add_site":
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            await update.message.reply_text("URL invalid. Folosește format complet, ex: https://site.ro")
+            return
+
+        current_sites = get_user_sites(chat_id)
+        if len(current_sites) >= MAX_SITES_PER_USER:
+            context.user_data.pop("pending")
+            await update.message.reply_text(f"Ai atins limita de {MAX_SITES_PER_USER} site-uri.")
+            return
+
         cursor.execute(
             "INSERT OR IGNORE INTO user_sites (chat_id, site) VALUES (?, ?)",
             (chat_id, text)
