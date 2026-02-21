@@ -94,24 +94,178 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Bot activ. Configurează până la 5 site-uri:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
-    print(f"DEBUG: User {update.message.chat_id} a apelat /start")
+    print(f"DEBUG: User {update.message.chat_id} a apelat /start și a primit meniu")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     chat_id = update.message.chat_id
+    
+    print(f"DEBUG: MESSAGE HANDLER apelat! Mesaj primit: '{text}' de la user {chat_id}")
+    print(f"DEBUG: Pending action curent: {context.user_data.get('pending_action')}")
+
     ensure_user(chat_id)
     migrate_legacy_single_site(chat_id)
-    print(f"DEBUG: Mesaj primit de la {chat_id}: '{text}'")
 
-    # ... (restul funcției message_handler rămâne neschimbat, doar adaug print la final dacă vrei)
-    # Exemplu la adăugare site:
-    if context.user_data.get("pending_action") == "add_site":
-        # ... cod existent ...
-        if cursor.rowcount or True:  # după commit
-            print(f"DEBUG: Site adăugat pentru user {chat_id}: {text}")
+    if text == "Add Site":
+        print("DEBUG: Intrat pe buton Add Site")
+        context.user_data["pending_action"] = "add_site"
+        await update.message.reply_text(
+            "Trimite URL-ul paginii de căutare pe care vrei monitorizare. (maxim 5 site-uri)"
+        )
+        return
 
-    # La finalul handler-ului
-    print(f"DEBUG: Handler mesaj terminat pentru '{text}' de la {chat_id}")
+    if text == "Remove Site":
+        print("DEBUG: Intrat pe buton Remove Site")
+        context.user_data["pending_action"] = "remove_site"
+        await update.message.reply_text("Trimite URL-ul exact pe care vrei să îl ștergi.")
+        return
+
+    if text == "List Sites":
+        print("DEBUG: Intrat pe buton List Sites")
+        context.user_data.pop("pending_action", None)
+        sites = get_user_sites(chat_id)
+        if not sites:
+            await update.message.reply_text("Nu ai site-uri configurate încă.")
+            return
+        formatted = "\n".join(f"{idx + 1}. {site}" for idx, site in enumerate(sites))
+        await update.message.reply_text(f"Site-uri configurate ({len(sites)}/{MAX_SITES_PER_USER}):\n{formatted}")
+        return
+
+    if text == "Set Keyword":
+        print("DEBUG: Intrat pe buton Set Keyword")
+        context.user_data["pending_action"] = "set_keyword"
+        await update.message.reply_text("Trimite keyword-ul (ex: apartament 2 camere brasov).")
+        return
+
+    if text == "Set Price":
+        print("DEBUG: Intrat pe buton Set Price")
+        context.user_data["pending_action"] = "set_price"
+        await update.message.reply_text("Trimite intervalul de preț: MIN MAX (ex: 30000 150000).")
+        return
+
+    if text == "Stop Alerts":
+        print("DEBUG: Intrat pe buton Stop Alerts")
+        context.user_data.pop("pending_action", None)
+        cursor.execute("UPDATE users SET active=0 WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("🔴 Alertele au fost oprite.")
+        return
+
+    if text == "Start Alerts":
+        print("DEBUG: Intrat pe buton Start Alerts")
+        context.user_data.pop("pending_action", None)
+        cursor.execute("UPDATE users SET active=1 WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("🟢 Alertele au fost activate.")
+        return
+
+    if text == "Show Config":
+        print("DEBUG: Intrat pe buton Show Config")
+        context.user_data.pop("pending_action", None)
+        cursor.execute(
+            "SELECT keyword, min_price, max_price, active FROM users WHERE chat_id=?",
+            (chat_id,),
+        )
+        data = cursor.fetchone()
+        sites = get_user_sites(chat_id)
+        status = "🟢 Active" if data and data[3] == 1 else "🔴 Oprite"
+        sites_text = "\n".join(f"- {site}" for site in sites) if sites else "(niciun site)"
+        await update.message.reply_text(
+            f"Config:\n"
+            f"Status: {status}\n"
+            f"Site-uri ({len(sites)}/{MAX_SITES_PER_USER}):\n{sites_text}\n"
+            f"Keyword: {data[0] if data and data[0] else '(gol)'}\n"
+            f"Min: {data[1] if data else 0}\n"
+            f"Max: {data[2] if data else 999999999}"
+        )
+        return
+
+    if text == "Reset Config":
+        print("DEBUG: Intrat pe buton Reset Config")
+        context.user_data.pop("pending_action", None)
+        cursor.execute(
+            "UPDATE users SET site=NULL, keyword=NULL, min_price=0, max_price=999999999, active=1 WHERE chat_id=?",
+            (chat_id,),
+        )
+        cursor.execute("DELETE FROM user_sites WHERE chat_id=?", (chat_id,))
+        cursor.execute("DELETE FROM seen WHERE chat_id=?", (chat_id,))
+        db.commit()
+        await update.message.reply_text("♻️ Config resetată.")
+        return
+
+    pending_action = context.user_data.get("pending_action")
+    print(f"DEBUG: Pending action după if-uri principale: {pending_action}")
+
+    if pending_action == "add_site":
+        print("DEBUG: Procesare add_site - URL primit: " + text)
+        if not text.startswith("http"):
+            await update.message.reply_text("Trimite un URL complet (ex: https://site.ro/cautare).")
+            return
+        sites = get_user_sites(chat_id)
+        if len(sites) >= MAX_SITES_PER_USER:
+            await update.message.reply_text("Ai atins limita de 5 site-uri. Șterge unul înainte să adaugi altul.")
+            return
+        try:
+            cursor.execute(
+                "INSERT INTO user_sites (chat_id, site) VALUES (?, ?)",
+                (chat_id, text),
+            )
+            db.commit()
+            context.user_data.pop("pending_action", None)
+            await update.message.reply_text("Site adăugat ✔")
+            print(f"DEBUG: Site adăugat cu succes: {text} pentru user {chat_id}")
+        except sqlite3.IntegrityError:
+            await update.message.reply_text("Site-ul există deja în listă.")
+        return
+
+    if pending_action == "remove_site":
+        print("DEBUG: Procesare remove_site - URL de șters: " + text)
+        cursor.execute(
+            "DELETE FROM user_sites WHERE chat_id=? AND site=?",
+            (chat_id, text),
+        )
+        deleted = cursor.rowcount
+        db.commit()
+        if deleted:
+            context.user_data.pop("pending_action", None)
+            await update.message.reply_text("Site șters ✔")
+            print(f"DEBUG: Site șters cu succes: {text}")
+        else:
+            await update.message.reply_text("Nu am găsit acest URL în lista ta.")
+        return
+
+    if pending_action == "set_keyword":
+        print("DEBUG: Procesare set_keyword - keyword: " + text)
+        keyword = text.strip()
+        cursor.execute("UPDATE users SET keyword=? WHERE chat_id=?", (keyword, chat_id))
+        db.commit()
+        context.user_data.pop("pending_action", None)
+        await update.message.reply_text("Keyword salvat ✔")
+        print(f"DEBUG: Keyword salvat: {keyword}")
+        return
+
+    if pending_action == "set_price":
+        print("DEBUG: Procesare set_price - input: " + text)
+        try:
+            min_price_str, max_price_str = text.split()
+            min_price = int(min_price_str)
+            max_price = int(max_price_str)
+            if min_price > max_price:
+                await update.message.reply_text("MIN trebuie să fie <= MAX.")
+                return
+            cursor.execute(
+                "UPDATE users SET min_price=?, max_price=? WHERE chat_id=?",
+                (min_price, max_price, chat_id),
+            )
+            db.commit()
+            context.user_data.pop("pending_action", None)
+            await update.message.reply_text("Interval preț salvat ✔")
+            print(f"DEBUG: Preț salvat: {min_price} - {max_price}")
+        except ValueError:
+            await update.message.reply_text("Format corect: 30000 150000")
+        return
+
+    print(f"DEBUG: Handler terminat - mesaj '{text}' nu a fost procesat ca buton sau pending action")
 
 # ------------------ MONITOR ------------------
 async def monitor(app):
@@ -136,11 +290,11 @@ async def monitor(app):
                 for chat_id, keyword, min_price, max_price in users:
                     sites = get_user_sites(chat_id)[:MAX_SITES_PER_USER]
                     if not sites:
-                        print(f"DEBUG: User {chat_id} nu are site-uri configurate, sar peste")
+                        print(f"DEBUG: User {chat_id} nu are site-uri, sar peste")
                         continue
 
                     normalized_words = normalize_text(keyword).split() if keyword else []
-                    print(f"DEBUG: Caut pentru user {chat_id} - keyword: '{keyword}', preț {min_price}-{max_price}")
+                    print(f"DEBUG: Caut pentru user {chat_id} - keyword '{keyword}', preț {min_price}-{max_price}")
 
                     for site in sites:
                         print(f"DEBUG: Accesez site: {site}")
@@ -149,7 +303,7 @@ async def monitor(app):
                             await page.goto(site, wait_until="domcontentloaded", timeout=60000)
                             await page.wait_for_timeout(2500)
                             html = await page.content()
-                            print(f"DEBUG: HTML încărcat de pe {site} (lungime: {len(html)} caractere)")
+                            print(f"DEBUG: HTML încărcat (lungime: {len(html)} caractere)")
                         except Exception as e:
                             print(f"DEBUG: Eroare la încărcarea site-ului {site}: {e}")
                             await page.close()
@@ -195,7 +349,7 @@ async def monitor(app):
                             )
                             db.commit()
 
-                            print(f"DEBUG: OFERTĂ NOUĂ DETECTATĂ pentru user {chat_id} - {title_raw} | Preț: {price} | Link: {href}")
+                            print(f"DEBUG: OFERTĂ NOUĂ DETECTATĂ - {title_raw} | Preț: {price} | Link: {href}")
 
                             await app.bot.send_message(
                                 chat_id=chat_id,
@@ -207,7 +361,7 @@ async def monitor(app):
                                     f"🔗 {href}"
                                 ),
                             )
-                            break  # oprește după prima alertă pe site dacă vrei, sau scoate break-ul
+                            break
 
                 await browser.close()
                 print("DEBUG: Browser închis după ciclu")
@@ -233,4 +387,4 @@ app.post_init = on_startup
 
 print("DEBUG: Încep polling-ul Telegram acum...")
 app.run_polling()
-print("DEBUG: run_polling a terminat (nu ar trebui să ajungem aici niciodată)")
+print("DEBUG: run_polling a terminat neașteptat (nu ar trebui să ajungem aici)")
